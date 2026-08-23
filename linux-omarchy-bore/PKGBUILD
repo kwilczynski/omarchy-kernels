@@ -1,0 +1,291 @@
+# Maintainer: The Omarchy Authors
+# Adopted from the Arch Linux linux package.
+
+pkgbase=linux-omarchy-bore
+pkgver=7.2.0
+pkgrel=1
+pkgdesc='Omarchy Linux (BORE CPU scheduler, ADIOS I/O scheduler)'
+url='https://omarchy.org'
+arch=(
+  x86_64
+)
+license=(GPL-2.0-only)
+makedepends=(
+  bc
+  binutils
+  cpio
+  gettext
+  glibc
+  libelf
+  libgcc
+  openssl
+  pahole
+  perl
+  python
+  rust
+  rust-bindgen
+  rust-src
+  tar
+  xxhash
+  xz
+  zlib
+  zstd
+)
+options=(
+  !debug
+  !strip
+)
+_srcname=linux-${pkgver%.*}
+source=(
+  https://cdn.kernel.org/pub/linux/kernel/v${pkgver%%.*}.x/${_srcname}.tar.{xz,sign}
+  0010-archlinux-base-7.1.patch{,.sig}
+  0020-drm-i915-alpm-limit-pr-alpm-to-panel-replay.patch{,.sig}
+  0028-drm-i915-psr-exit-Panel-Replay-for-ALPM-lag.patch{,.sig}
+  0029-drm-edid-populate-monitor-range-from-displayid-adaptive-sync.patch{,.sig}
+  0030-drm-xe-flat-ccs-round-down.patch{,.sig}
+  0100-bore-6.8.0.patch{,.sig}
+  0110-adios-3.2.0.patch{,.sig}
+)
+source_x86_64=(config.x86_64)
+validpgpkeys=(
+  ABAF11C65A2970B130ABE3C479BE3E4300411886  # Linus Torvalds
+  647F28654894E3BD457199BE38DBBDC86092693E  # Greg Kroah-Hartman
+  12D27D5D8C8E9BF1AABC7C7C7C64768D3DE334E7  # Krzysztof Wilczynski
+)
+b2sums=('cf5f3d87b96f223034c47c6e5fc972fe52c2556310eb2f064632537b8727231135a8540179fd5d51343738c8a51f51f09c7e8da374324b68551c84a4124bb71b'
+        'SKIP'
+        '42fcae4796d0dae7828ec60643a82e1a82127b5af104ea1c4b1debd78868dabae0876ad81512e1b758b95f316809100d8e7de016ff65079bfe7104745c77682b'
+        'SKIP'
+        '505bf01a9d6b0926b557b673bb686d1a4ff73ee70539991e52272fbf58aad3ea25cf5ffc5c2d094a2d5e78b18a1a134f2ab530f595073a2d3eba9ff2c1418e1e'
+        'SKIP'
+        'b33b46c37f12f7650a67c3731b87ff84add1ac8623cc96b52223a1ef9946bcaa990ed7c7036674e228335f57ec9ed421ea4d6c1dd72d19b516215d9ac2c7c3ee'
+        'SKIP'
+        '1b340a502dcf5a1680caf5320b3aa72aa4317e4cf1d877c1f6425e281a5668d5f092417e1f282371c0a211344f5c187fb3bdaf3f97c7e122951edf7e4c08ca58'
+        'SKIP'
+        '3bc3bcc103aa34a3a34b4bdc033978f05aa3569a871be6a78ad68b33854f3b50002a74cdf37b7ab002159fe85b2b2e388aeb94e7166d6b7493a4858a33b0a8b5'
+        'SKIP'
+        '03b790b2ead787c3ba16ac1b644ec1db88bf265a916ac653b91ac5eda036b58b40e087b960b943ac7faf6f383e1a13bf99fa3a7f84020be087cd6cf2924c3308'
+        'SKIP'
+        '4f58fc77bc13fe9492fe4662e0a4b879a8a1616e271c2095959dccdffed9b0a866a4eb9dc3ac74fad9eed11c362e43a7bfa56d8ea6f571572a63ff4550c5dc23'
+        'SKIP')
+b2sums_x86_64=('6aa981afdf012b1b3cfa8f51e4fa45952c56f11d838ee2a9ad9b112ce3380a2d2069e697cdfefb174d18df97224d35a492d15fde2b7d29e9ffd823f4737859cf')
+
+# https://www.kernel.org/pub/linux/kernel/v7.x/sha256sums.asc
+sha256sums=('f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3'
+            'SKIP'
+            '29454b640531021cced21d1b715b69413cab1e0a5c8f3b76d3f4e1921cf063d8'
+            'SKIP'
+            '1f0c958b64ba48b8dc8b5548e1ad1934b8d4903fc16fec15014759e3681ea275'
+            'SKIP'
+            '47994d576008a377de612ed77e6b2e7bc6b24ad3a30a6d157646d380ae323142'
+            'SKIP'
+            '5cc215215fed4247c2d6b9732deff586331a07d54c3b00538a81921093a3a1a1'
+            'SKIP'
+            'bb63c36475bb06efcdfbb7d0d68646452dd468c202f646346449a1f64087288d'
+            'SKIP'
+            '3ed228df4dc55360c1ecbc155ea8ac1a940c90e08c7e591f178c300a8c6f934f'
+            'SKIP'
+            '07baad05112a47cb0aea81191502c87e496e13b4f23a6ec36ea65bb4219c35a8'
+            'SKIP')
+
+export KBUILD_BUILD_HOST=omarchy
+export KBUILD_BUILD_USER=$pkgbase
+export KBUILD_BUILD_TIMESTAMP="$(date -Ru${SOURCE_DATE_EPOCH:+d @$SOURCE_DATE_EPOCH})"
+
+prepare() {
+  cd $_srcname
+
+  echo "Setting version..."
+  echo "-$pkgrel" > localversion.10-pkgrel
+  echo "${pkgbase#linux}" > localversion.20-pkgname
+
+  local src
+  for src in "${source[@]}"; do
+    src="${src%%::*}"
+    src="${src##*/}"
+    src="${src%.zst}"
+    [[ $src = *.patch ]] || continue
+    echo "Applying patch $src..."
+    patch -Np1 --fuzz=0 < "../$src"
+  done
+
+  echo "Setting config..."
+  cp ../config.$CARCH .config
+  make olddefconfig
+  diff -u ../config.$CARCH .config || :
+
+  make -s kernelrelease > version
+  echo "Prepared $pkgbase version $(<version)"
+}
+
+build() {
+  cd $_srcname
+  make all
+  make -C tools/bpf/bpftool vmlinux.h feature-clang-bpf-co-re=1
+}
+
+_package() {
+  pkgdesc="The $pkgdesc kernel and modules"
+  depends=(
+    coreutils
+    initramfs
+    kmod
+  )
+  optdepends=(
+    "$pkgbase-headers: headers and scripts for building modules"
+    'linux-firmware: firmware images needed for some devices'
+    'scx-scheds: to use sched-ext schedulers'
+    'sof-firmware: firmware for Intel SOF audio'
+    'wireless-regdb: to set the correct wireless channels of your country'
+  )
+  provides=(
+    ADIOS-MODULE
+    KSMBD-MODULE
+    NTSYNC-MODULE
+    VIRTUALBOX-GUEST-MODULES
+    WIREGUARD-MODULE
+  )
+
+  cd $_srcname
+  local modulesdir="$pkgdir/usr/lib/modules/$(<version)"
+
+  echo "Installing boot image..."
+  # systemd expects to find the kernel here to allow hibernation
+  # https://github.com/systemd/systemd/commit/edda44605f06a41fb86b7ab8128dcf99161d2344
+  install -Dm644 "$(make -s image_name)" "$modulesdir/vmlinuz"
+
+  # Used by mkinitcpio to name the kernel
+  echo "$pkgbase" | install -Dm644 /dev/stdin "$modulesdir/pkgbase"
+
+  echo "Installing modules..."
+  ZSTD_CLEVEL=19 make INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 \
+    DEPMOD=/doesnt/exist modules_install  # Suppress depmod
+
+  # remove build link
+  rm "$modulesdir"/build
+}
+
+_package-headers() {
+  pkgdesc="Headers and scripts for building modules for the $pkgdesc kernel"
+  depends=(
+    binutils
+    glibc
+    libelf
+    libgcc
+    openssl
+    pahole
+    xxhash
+    zlib
+    zstd
+  )
+  provides=(LINUX-HEADERS)
+
+  cd $_srcname
+  local builddir="$pkgdir/usr/lib/modules/$(<version)/build"
+
+  local karch
+  case $CARCH in
+    x86_64) karch=x86 ;;
+    *) echo "Unknown CARCH $CARCH"; exit 1 ;;
+  esac
+
+  echo "Installing build files..."
+  install -Dt "$builddir" -m644 .config Makefile Module.symvers System.map \
+    localversion.* version vmlinux tools/bpf/bpftool/vmlinux.h
+  install -Dt "$builddir/kernel" -m644 kernel/Makefile
+  install -Dt "$builddir/arch/$karch" -m644 arch/$karch/Makefile
+  cp -t "$builddir" -a scripts
+  ln -srt "$builddir" "$builddir/scripts/gdb/vmlinux-gdb.py"
+
+  if [[ $(scripts/config -s CONFIG_HAVE_STACK_VALIDATION) = y ]]; then
+    install -Dt "$builddir/tools/objtool" tools/objtool/objtool
+  fi
+
+  if [[ $(scripts/config -s CONFIG_DEBUG_INFO_BTF_MODULES) = y ]]; then
+    install -Dt "$builddir/tools/bpf/resolve_btfids" tools/bpf/resolve_btfids/resolve_btfids
+  fi
+
+  echo "Installing headers..."
+  cp -t "$builddir" -a include
+  cp -t "$builddir/arch/$karch" -a arch/$karch/include
+  install -Dt "$builddir/arch/$karch/kernel" -m644 arch/$karch/kernel/asm-offsets.s
+
+  install -Dt "$builddir/drivers/md" -m644 drivers/md/*.h
+  install -Dt "$builddir/net/mac80211" -m644 net/mac80211/*.h
+
+  # https://bugs.archlinux.org/task/13146
+  install -Dt "$builddir/drivers/media/i2c" -m644 drivers/media/i2c/msp3400-driver.h
+
+  # https://bugs.archlinux.org/task/20402
+  install -Dt "$builddir/drivers/media/usb/dvb-usb" -m644 drivers/media/usb/dvb-usb/*.h
+  install -Dt "$builddir/drivers/media/dvb-frontends" -m644 drivers/media/dvb-frontends/*.h
+  install -Dt "$builddir/drivers/media/tuners" -m644 drivers/media/tuners/*.h
+
+  # https://bugs.archlinux.org/task/71392
+  install -Dt "$builddir/drivers/iio/common/hid-sensors" -m644 drivers/iio/common/hid-sensors/*.h
+
+  echo "Installing KConfig files..."
+  find . -name 'Kconfig*' -exec install -Dm644 {} "$builddir/{}" \;
+
+  if [[ $(scripts/config -s CONFIG_RUST) = y ]]; then
+    echo "Installing Rust files..."
+    install -Dt "$builddir/rust" -m644 rust/*.rmeta
+    install -Dt "$builddir/rust" rust/*.so
+  fi
+
+  echo "Installing unstripped VDSO..."
+  make INSTALL_MOD_PATH="$pkgdir/usr" vdso_install \
+    link=  # Suppress build-id symlinks
+
+  echo "Removing unneeded architectures..."
+  local arch
+  for arch in "$builddir"/arch/*/; do
+    [[ $arch = */$karch/ ]] && continue
+    echo "Removing $(basename "$arch")"
+    rm -r "$arch"
+  done
+
+  echo "Removing documentation..."
+  rm -r "$builddir/Documentation"
+
+  echo "Removing broken symlinks..."
+  find -L "$builddir" -type l -printf 'Removing %P\n' -delete
+
+  echo "Removing loose objects..."
+  find "$builddir" -type f -name '*.o' -printf 'Removing %P\n' -delete
+
+  echo "Stripping build tools..."
+  local file
+  while read -rd '' file; do
+    case "$(file -Sib "$file")" in
+      application/x-sharedlib\;*)      # Libraries (.so)
+        strip -v $STRIP_SHARED "$file" ;;
+      application/x-archive\;*)        # Libraries (.a)
+        strip -v $STRIP_STATIC "$file" ;;
+      application/x-executable\;*)     # Binaries
+        strip -v $STRIP_BINARIES "$file" ;;
+      application/x-pie-executable\;*) # Relocatable binaries
+        strip -v $STRIP_SHARED "$file" ;;
+    esac
+  done < <(find "$builddir" -type f -perm -u+x ! -name vmlinux -print0)
+
+  echo "Stripping vmlinux..."
+  strip -v $STRIP_STATIC "$builddir/vmlinux"
+
+  echo "Adding symlink..."
+  mkdir -p "$pkgdir/usr/src"
+  ln -sr "$builddir" "$pkgdir/usr/src/$pkgbase"
+}
+
+pkgname=(
+  "$pkgbase"
+  "$pkgbase-headers"
+)
+for _p in "${pkgname[@]}"; do
+  eval "package_$_p() {
+    $(declare -f "_package${_p#$pkgbase}")
+    _package${_p#$pkgbase}
+  }"
+done
+
+# vim:set ts=8 sts=2 sw=2 et:
