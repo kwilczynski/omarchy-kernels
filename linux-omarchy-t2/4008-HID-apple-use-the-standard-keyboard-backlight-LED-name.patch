@@ -1,0 +1,12 @@
+diff --git a/drivers/hid/hid-apple.c b/drivers/hid/hid-apple.c
+--- a/drivers/hid/hid-apple.c
++++ b/drivers/hid/hid-apple.c
+@@ -875,7 +875,7 @@
+ 	}
+ 
+ 	asc->backlight->hdev = hdev;
+-	asc->backlight->cdev.name = "apple::kbd_backlight";
++	asc->backlight->cdev.name = ":white:" LED_FUNCTION_KBD_BACKLIGHT;
+ 	asc->backlight->cdev.max_brightness = le16_to_cpu(rep->backlight_on_max);
+ 	asc->backlight->cdev.brightness_set_blocking = apple_backlight_led_set;
+ 	/* VHCI re-enumeration restores the cached brightness in the next probe. */

@@ -1,0 +1,472 @@
+# Maintainer: The Omarchy Authors
+# Adopted from the Arch Linux linux package.
+
+pkgbase=linux-omarchy-t2
+pkgver=7.2.1rc1
+pkgrel=1
+pkgdesc='Omarchy Linux (Apple T2 Macs)'
+url='https://omarchy.org'
+arch=(
+  x86_64
+)
+license=(GPL-2.0-only)
+makedepends=(
+  bc
+  binutils
+  cpio
+  gettext
+  glibc
+  libelf
+  libgcc
+  openssl
+  pahole
+  perl
+  python
+  rust
+  rust-bindgen
+  rust-src
+  tar
+  xxhash
+  xz
+  zlib
+  zstd
+)
+options=(
+  !debug
+  !strip
+)
+_major=${pkgver%%.*}
+if [[ $pkgver == *rc* ]]; then
+  _srcname=linux-${pkgver%.*}
+  _rcpatch=patch-${pkgver//rc/-rc}
+else
+  _srcname=linux-$pkgver
+fi
+source=(
+  https://cdn.kernel.org/pub/linux/kernel/v${_major}.x/${_srcname}.tar.{xz,sign}
+  ${_rcpatch:+https://cdn.kernel.org/pub/linux/kernel/v${_major}.x/stable-review/${_rcpatch}.xz}
+  ${_rcpatch:+https://cdn.kernel.org/pub/linux/kernel/v${_major}.x/stable-review/${_rcpatch}.sign}
+  0010-archlinux-base-7.1.patch{,.sig}
+  1001-Add-t2bce-driver-stack.patch{,.sig}
+  1002-Integrate-t2bce-driver-stack.patch{,.sig}
+  2008-i915-4-lane-quirk-for-mbp15-1.patch{,.sig}
+  2009-apple-gmux-allow-switching-to-igpu-at-probe.patch{,.sig}
+  2010-vga_switcheroo-defer-probe-of-display-devices-on-T2.patch{,.sig}
+  2011-thunderbolt-shift-tb_apple_add_links-to-pci.patch{,.sig}
+  2012-thunderbolt-device-links-apple-machines.patch{,.sig}
+  2013-thunderbolt-device-links-apple-systems.patch{,.sig}
+  2014-apple-gmux-release-igpu-pci-reference.patch{,.sig}
+  2015-apple-gmux-fix-force_igd-parameter-name.patch{,.sig}
+  3001-applesmc-convert-static-structures-to-drvdata.patch{,.sig}
+  3002-applesmc-make-io-port-base-addr-dynamic.patch{,.sig}
+  3003-applesmc-switch-to-acpi_device-from-platform.patch{,.sig}
+  3004-applesmc-key-interface-wrappers.patch{,.sig}
+  3005-applesmc-basic-mmio-interface-implementation.patch{,.sig}
+  3006-applesmc-fan-support-on-T2-Macs.patch{,.sig}
+  3007-applesmc-Add-iMacPro-to-applesmc_whitelist.patch{,.sig}
+  3008-applesmc-make-applesmc_remove-void.patch{,.sig}
+  3009-applesmc-battery-charge-limiter.patch{,.sig}
+  4001a-asahi-trackpad-infra.patch{,.sig}
+  4001b-asahi-trackpad-magicmouse.patch{,.sig}
+  4003-HID-apple-ignore-the-trackpad-on-T2-Macs.patch{,.sig}
+  4004-HID-magicmouse-Add-support-for-trackpads-found-on-T2.patch{,.sig}
+  4005-HID-magicmouse-fix-regression-breaking-support-for-M.patch{,.sig}
+  4006-HID-apple-fix-endianness-of-keyboard-backlight-reports.patch{,.sig}
+  4007-HID-apple-preserve-keyboard-backlight-across-T2-resume.patch{,.sig}
+  4008-HID-apple-use-the-standard-keyboard-backlight-LED-name.patch{,.sig}
+  5001-HID-appletb-kbd-layer-switching-fn-double-press-v3.patch{,.sig}
+  5002-HID-apple-touchbar-avoid-nested-runtime-pm.patch{,.sig}
+  6001-drm-amd-pm-Fix-boot-problems-in-5300.patch{,.sig}
+  7001-drm-i915-fbdev-Discard-BIOS-framebuffers-exceeding-h.patch{,.sig}
+  7002-drm-amdgpu-reset-VI-ASIC-on-MacBookPro15-1.patch{,.sig}
+  7003-platform-x86-apple-gmux-add-MacBookPro15-1-dGPU-powe.patch{,.sig}
+  7004-drm-amdgpu-add-Apple-GMUX-runtime-PM-support.patch{,.sig}
+  7005-ALSA-hda-allow-direct-complete-with-a-powered-off-GP.patch{,.sig}
+  8001-Add-APFS-driver.patch{,.sig}
+  8002-Necessary-modifications-to-build-APFS-with-the-kerne.patch{,.sig}
+  9001-ACPI-x86-Apple-T2-systems-need-early-CPU-offlining.patch{,.sig}
+  9002-x86-cache-restore-AP-cache-state-while-bringing-CPUs.patch{,.sig}
+)
+source_x86_64=(config.x86_64)
+validpgpkeys=(
+  ABAF11C65A2970B130ABE3C479BE3E4300411886  # Linus Torvalds
+  647F28654894E3BD457199BE38DBBDC86092693E  # Greg Kroah-Hartman
+  12D27D5D8C8E9BF1AABC7C7C7C64768D3DE334E7  # Krzysztof Wilczynski
+)
+b2sums=('cf5f3d87b96f223034c47c6e5fc972fe52c2556310eb2f064632537b8727231135a8540179fd5d51343738c8a51f51f09c7e8da374324b68551c84a4124bb71b'
+        'SKIP'
+        '5099005a74c487f21260f9e05468acf3264c26f22f2a7070066f9b10ad3ccf6e7d3501a4ee88b3f6ecf05dcf30423517690f3153c3032e9de12f05a9fa16ea32'
+        'SKIP'
+        '42fcae4796d0dae7828ec60643a82e1a82127b5af104ea1c4b1debd78868dabae0876ad81512e1b758b95f316809100d8e7de016ff65079bfe7104745c77682b'
+        'SKIP'
+        '38efb4ee539486d497e778ea22a26cbd0eacce9780fc04b27579770cea95c464290b4f46c18c6105710296c64ce0201a3fb705265748495fd406ff91e56defdc'
+        'SKIP'
+        '5f73102fb6a4531003f0b45d552a42d0063ea13324b3de445737b9b8f491b1bb9287c05c5fbba8e692217f2c7bfe104e34ac1d6e4ff57ee51dce9f1dd00fb32e'
+        'SKIP'
+        '8a8ca20f6e66f859cf4ff2a7c0b6e86682de762d0b79f2207e74532980ad1f9a2ca0021349834eab78582869d7b688934752663e948cf68083eb8f1084f16203'
+        'SKIP'
+        '3fe146fa8c053a3737806b4f44a04fd4c594dc25d002bdc145f9c875bc59f3d4d719e3fc29fa80b8eb7583647cbd9eb51184e0427086995e3ff66fadcacb49c3'
+        'SKIP'
+        'f1976d5e797d689b0d6bac07e63e055b6b7ad167d35295a1d686f5769d4f2470c6323841c8a26a9621d2ee69d9cab1e0384240264108c6e338055d95b1e1149e'
+        'SKIP'
+        'cc9293e0baaf1b8a9950327c3f24874d73dbdbc56ad50e798e1bfa045f90b7e4ed471e1cbc44878c9a3c4873718e11437457056e467dd4ee428ae3ec2acc5bd0'
+        'SKIP'
+        'c5a0b5e8ec76ecc4cd4478268852dcf8eadc26931ca816cd98957251a2ac45e0ce0a96459c10d39f8225f74ceee999adee1404a4280a5aa1f184e1ec69e6eeb6'
+        'SKIP'
+        '84d2078120cf8e247ad5aff3cda072e986391cbcc8469221a3342251ade3844dc20d830a6c52f17af983d0fbc5966cd74eaeff74e39813401e1ae11df0f95070'
+        'SKIP'
+        'e6f4bc2500c4ebccd644060b6d8d94702244b1777408af62558e1e0ec5551d57a0c9c59ea76b90eba6c67ba7aafdfcfeb8be49a1b44e7576452eaee032418aa4'
+        'SKIP'
+        'f123f01a9efc64ffd7220588de8b169a3a71c788c9b147eeebf3a9268dd52815229f56a4e007ac291ecdb09fefe4f2cbcfe787eca74b33154a3a09fe988d5aa6'
+        'SKIP'
+        '79b0b9b991c4956da2d650c3ef384b36646a89fe77ac991ca527a8b829c83fdd6bdaeca6205f0a5c57cef2d57239dfbd7558d4342ab216f058d3a1c7d840db39'
+        'SKIP'
+        'c863791a0da2909845254b6bb24e8a489dd35806746deaeff0b8d67264a0e8a4ffbbc49b5f1672ba25609ca10fc83704c736854c504a4205c04a5d5cee1b3cf8'
+        'SKIP'
+        'c5f3386d0723628f0645eabfd5b47596a13c3922e33af32c3c413f8c5051cb941119fdcf20ff0fb1cfac1f26a3293178af16193e655d7ca548f08da8e9dbcb91'
+        'SKIP'
+        'e8603d7646534f285ab110dae6a312b0f4d9ea262fbbe35a2728ff1e593c029e8fac280f7fe4adc9135bb6a0ba6efd54b6e0d39124ac3ca14adbed645f8cb118'
+        'SKIP'
+        '6fe805c470f212a0fc3f3a344024deee372c6bdd0d490a106fc8b79a8ede4bdb3bda0df35cc2d688f7dc3e17210254c89df47e8885059129a950d049b0dd453e'
+        'SKIP'
+        '95e1d09b06b559a536c7ff1f0938ea8a44b395822de2ea40d776a3710ba12d70e762301b7898414f2114156b96b31f77765ffbe0551ceffa6bcc71a71cb48104'
+        'SKIP'
+        'c39c0042112bdda86925fb4f3fc939452791858df8c06e080c48741d566489b95c065cb5a32e3effbd29520d7cd4003b23b93755298273f8a7e43461280836ad'
+        'SKIP'
+        'c67a9bb66944c6a51ab608c39d7c45cba3a9f6dacb1d8d3cd808dbcede74933eab9c009b92c308449dbd98742056ffe847e0a511700ca36bef235226b67e73d7'
+        'SKIP'
+        '55adcccbda725dc6e118e81289b99af1ac79116c4484165d390c48095690d9f22778d8fbd168e2307d6c9e2498296dafac5bf8ae7e4f712e4129261d43eafbf2'
+        'SKIP'
+        'cd6c47e1c1bb82cd8ba2e25792a7cf31e9affe0227379251cf89a143aed657d33b0f0bd26ee447f3ecffe6637ddef93240b1cf5820867c71b5764a37afc1d035'
+        'SKIP'
+        'ff0fb9e98b9b2cb8fe50f83d145cee2f05709efb31f453a5a0b94efdca94129dbfd6e7de1c89496b75bbf682e75cf6305772b1c20fc6ce2e3f4e1111a6121885'
+        'SKIP'
+        'bea60b9df533bb85b0ba5738561bc7ddc7ad7dfd73d9e358929205a36ca97e07be0e7fabb73342e108b5e988074ede5cc9fb61cea48e0fa4d6ff10badea7b2d5'
+        'SKIP'
+        '8d751bba022ae15fb5f0c99a91b7388e5c0c3d157086cc7b8724fe1659951ce4d0aaf8b08ea555e62f24b7c4c59138dbb86322fb04c2a5525b97a5f0bc42dbd4'
+        'SKIP'
+        '957555b783c0146f29f4a92ae1006ffb7ab5e7ede9e3261fd6d7c5208179b5cc73a08e161f1e997bbbde4b767903420acb48ffb9905cc45aee09a9efe1b6b9c9'
+        'SKIP'
+        '0d59f7a7faff5adb5cd0d57802ac51f1d3f941d92150b35765643e164d6ede12c8431433796363b1727960adc0529eb77a09eb31245e2218bf6d46998065f253'
+        'SKIP'
+        '749c55838df5679c3f474a936c170b23d24c8407f32965623f89d18a14d7a27cd51091ce3cd788858aeacd2bd378eee61c66bd9d28841006cf2ce246820ddcd1'
+        'SKIP'
+        '7af9b6cab6f7f3b7bbcb7db45b02ef1767ce39cead9bf6462fe3d0620a04552e20480f7735b7c8c8135131b23846b16371bf409f75856d4338403c19fa84196f'
+        'SKIP'
+        '944ee8841c60da971380bb34ab76fd08f46aa29b78e1dff736abb7b4d4888de72f5f5946b8d2bf5c3f8e1f7fe1116923c3e9486bdcdc362b81af8b4aad19866c'
+        'SKIP'
+        '8c3b395520af89617039ff6fdc1c4a21c736f759f47f7fcbf4af565fdfcde5878fd29b1999a9d0dbbc2d902ff192e7d38e300bc54f4a7d7eff26b4e3a1ae5a6e'
+        'SKIP'
+        '60cb3a6b147e4d8ea0741fad124518bb9e337115c56b42748ce79051093c8dd9cb7dc8d0448f95d869ce84a855f5317ce5a8f0f1dbd4e44a3ef64935606769d0'
+        'SKIP'
+        'c1cce73cb14b2ce1d80e76ba4aec379ca890fae6dc694542c2d0a097c74684b9e8dab62558fae44e730595bd3cf26a56264ef7c09e6e19ee3b6ed09b0d858931'
+        'SKIP'
+        'c2e6cde2a3f39f3db151fe2ad5b3656cc2233f0b495818a123f1d0d70ff1f0ca60ded9b4cd296ad77380a8a480e391dae46dbde90d4c3e4c2ac88058a86e4a42'
+        'SKIP'
+        '07e2bb4b5e3d807cd851df2b2b368fc25abef8e2124dccb44095ea375581795cb78ce68b19e5683972ac94a881ed87607a86aeea2792ca77f58cf606c1868c32'
+        'SKIP'
+        '87f0de14cb0ccd8a3e357dd6a74c2b0722eedce7a163ba7fe35f8952037a86f482a9b5dcf441f506d7d0e4340ee60e3b05200de4d00d48e0172d80bf8aba8b42'
+        'SKIP'
+        'e42ba03885646b71ed0cbf35217f84327ff189a14626a88fc104c36b51ced4b337d9a72886d0763bb0e40f9fa49df33fb5f2b7156eab0f81a3cf25d1fb670bbf'
+        'SKIP'
+        '0809fa2bf9274dccd81b6d4cbafa631ebd618de121d83e6558f78fcb580ff962dc3a0161b33e09caf8ed61e0f2e6b6a2848d5bcee5c7d396a90007b94973ff1a'
+        'SKIP'
+        'a92d109c414b7f00da437d6413180ec23fa49e213856322ee09a26ff2596eb5ecf2e92de6c6ad671fcb8d1efbcad9068821263fd4907e56e115dc760b96e9b01'
+        'SKIP'
+        '02a4f42c7a586d5cbdf9123300ba30dbe0b3e3d981e2560827f7d1f70bb65f88e0b8d042ae8423c3b4d71612050f4c1d3efd42e9ac7d125f18778df31c1271d9'
+        'SKIP'
+        '7451149b2112ad8bd268697d65930df177100b8d052b858bc3891b521182772fa077ba50477326e94df706d1ab7da2985d077fc7ae103d0c85c8f3d40e87e8bc'
+        'SKIP')
+b2sums_x86_64=('44ca49a7fda592e16834fefd208f1811f933727dab1c8d6f521ecdf01511e3c84b6e85c8a9da0ae93753d2a7da7cfeacda2cfd0b007f64cf1c8de4a4acfd7c1b')
+
+# https://www.kernel.org/pub/linux/kernel/v7.x/sha256sums.asc
+sha256sums=('f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3'
+            'SKIP'
+            '2707f832541d5d49d26f352e2ec169658e9e0d90117a8420408d37f378cd5c5a'
+            'SKIP'
+            '29454b640531021cced21d1b715b69413cab1e0a5c8f3b76d3f4e1921cf063d8'
+            'SKIP'
+            '7d050bd960376142f8de7d9ca7f38ae9f50f99e697a8de6da22d3759fbc96731'
+            'SKIP'
+            '8315819f58e12e45e88dbc379c0fb8ab0886ef71afc469a1dc91b13a3f61c8d1'
+            'SKIP'
+            '13e2f777f9c0ea38887f62e5bed294efecafe20eb28344edcecdd83177c00a52'
+            'SKIP'
+            '5dc1ae2db96e47d3e88063f4f82e827e6762cc611a898e3070618e751dc06e23'
+            'SKIP'
+            '8b3a3a0c11b57e22b17c9727a1ac890ef380292f95f3975a9b0e637a86223df3'
+            'SKIP'
+            'dfe4095c1f873cdeadd1a6a8fbd656af3cd66a36ad8438a48da706ae852ea06f'
+            'SKIP'
+            '78c0cbecbf4c582e7aea91efaacb79691cb74d92620204c5c51d2e3417e51e6b'
+            'SKIP'
+            'c45c076bc32a6a5c455d1f5112eb5daf496d290fab62ec639ee28ff3cd2ada75'
+            'SKIP'
+            '2b7c7dff9062c82017e804479c804c15441cabcd17b903949a6083b1f7f053b8'
+            'SKIP'
+            'dfb58e71bb64e5ed81165ca1c37fdf2bf773a64f6ead7203626ac05a62dd76c2'
+            'SKIP'
+            '6041af66cca88cc734fcd93c78a09f2f37292ca45f89e8e4fe590e4993036e9f'
+            'SKIP'
+            '1c249cfd5dcfa95247ff562833a7bd63bcd96084427d9d7b3b6fa8ab94475e2a'
+            'SKIP'
+            '4dc4621fbbbb2166f5bd23aea961c6b27b8a4e6593f9e937e4a79e9e26f60a6d'
+            'SKIP'
+            '53c63ac8923d6fd4607a0d15503131c27a344f7be3427da79517e6a6bf727c18'
+            'SKIP'
+            'e6aa18e8816b189cb60aca1a03350e8985e2e188222c1e2c4038dfcf681b0283'
+            'SKIP'
+            'a91e40bb2cc6b6c45768bc8ecf4be8c1fd8a408fb919c490540135bfc703824c'
+            'SKIP'
+            '91e80d761d86ccd0392bbcdf1797bbb892fafefa8b409f9b12f8f105082cb20b'
+            'SKIP'
+            'ef358a2b01757497461bbb070313202742f4f733120f0418236e57784add88cd'
+            'SKIP'
+            'eef2bb88d8d8ebdcef8e1f84f10784bf2467e62da23b0d5cd28e732eea2bc4e3'
+            'SKIP'
+            '6a8e74328cac6477469fb0ae9f16c70ba7d76d56f8836d4c9b0b45eb2cba0432'
+            'SKIP'
+            'f1d1287004fab7576ad480784d87aab9ca698d9c270c7f2bfcc0d58c39f904c9'
+            'SKIP'
+            'dac2775aa262a7d52b23e35dcdda5b727df0d8317d86003f8d8bc6a95b6cdab3'
+            'SKIP'
+            '4a2d047e949e7c1ee15be39dd303ef04afed9745a346663394778946a2c7a509'
+            'SKIP'
+            '098bab562ae938993db7172853b7c915483cf7968fd5093e752f5b5222aec374'
+            'SKIP'
+            '09d3015f663c43fce47c4ba8863226acaad1bce3efd964d911675b670ee0eaf6'
+            'SKIP'
+            '34b5077c762e28ae35010171738643d169de5d87c12518aa14bef0034b5cbfc0'
+            'SKIP'
+            '69b548f8fd7c45aa98841a0c80765f2071db349624213d299e54d205d91fca3c'
+            'SKIP'
+            '39712047701858c720da6d76f7bfe3c11f0926a2cb4256ab19c406272a6bbd97'
+            'SKIP'
+            'c8f37ab821d65199ac761892e82834342742e32239a52f9516fd4dae8a719aa8'
+            'SKIP'
+            '8d8977f11efebe29f48516e1c687c87046f3ecbcc9a84352f463e3a3a72cf545'
+            'SKIP'
+            'e2d83d9bcd41137ba53c85aebf4d3dc626eda00a5794801bc9bcbed3cd150d15'
+            'SKIP'
+            'c237336bc6c7416f0fadecdf018af53fa9c3a89f4beab841fb081e2e888561a5'
+            'SKIP'
+            'e71aead77a007e07f8907ff162ad57e6327e3cf2eef3102bb7fc5b23abfa13b3'
+            'SKIP'
+            'e29ca95a33dacd148d7d0a8c26f51659e0e4f37758845960b4caaffce7632fe0'
+            'SKIP'
+            '90a64755c6c84c0a276e197b25baac7eeb3838d1f4a6b8a8bf0fe8559c0b8618'
+            'SKIP'
+            '3af95395b28a1feff3aba5a2522210816364a2b6d04c3930eb17283f92dba500'
+            'SKIP'
+            '3dd4163f67f5f99d1143640e8b462e9872d79da520e2d97c7518c8acfb7ddd5d'
+            'SKIP'
+            'afdc59a1fb12d024092eced440f31af432a331d7c57e51b5ceeecc52f3c078cf'
+            'SKIP'
+            'cc2a0c05fbf5fdaeb95247101728141f6d17f6988e22c79b48fcb57d239c1a0d'
+            'SKIP')
+
+export KBUILD_BUILD_HOST=omarchy
+export KBUILD_BUILD_USER=$pkgbase
+export KBUILD_BUILD_TIMESTAMP="$(date -Ru${SOURCE_DATE_EPOCH:+d @$SOURCE_DATE_EPOCH})"
+
+prepare() {
+  cd $_srcname
+
+  echo "Setting version..."
+  echo "-$pkgrel" > localversion.10-pkgrel
+  echo "${pkgbase#linux}" > localversion.20-pkgname
+
+  if [[ -n ${_rcpatch:-} ]]; then
+    echo "Applying patch $_rcpatch..."
+    patch -Np1 --fuzz=0 < "../$_rcpatch"
+  fi
+
+  local src
+  for src in "${source[@]}"; do
+    src="${src%%::*}"
+    src="${src##*/}"
+    src="${src%.zst}"
+    [[ $src = *.patch ]] || continue
+    echo "Applying patch $src..."
+    patch -Np1 --fuzz=0 < "../$src"
+  done
+
+  echo "Setting config..."
+  cp ../config.$CARCH .config
+  make olddefconfig
+  diff -u ../config.$CARCH .config || :
+
+  make -s kernelrelease > version
+  echo "Prepared $pkgbase version $(<version)"
+}
+
+build() {
+  cd $_srcname
+  make all
+  make -C tools/bpf/bpftool vmlinux.h feature-clang-bpf-co-re=1
+}
+
+_package() {
+  pkgdesc="The $pkgdesc kernel and modules"
+  depends=(
+    coreutils
+    initramfs
+    kmod
+  )
+  optdepends=(
+    "$pkgbase-headers: headers and scripts for building modules"
+    'linux-firmware: firmware images needed for some devices'
+    'scx-scheds: to use sched-ext schedulers'
+    'sof-firmware: firmware for Intel SOF audio'
+    'wireless-regdb: to set the correct wireless channels of your country'
+  )
+  provides=(
+    KSMBD-MODULE
+    NTSYNC-MODULE
+    VIRTUALBOX-GUEST-MODULES
+    WIREGUARD-MODULE
+  )
+
+  cd $_srcname
+  local modulesdir="$pkgdir/usr/lib/modules/$(<version)"
+
+  echo "Installing boot image..."
+  # systemd expects to find the kernel here to allow hibernation
+  # https://github.com/systemd/systemd/commit/edda44605f06a41fb86b7ab8128dcf99161d2344
+  install -Dm644 "$(make -s image_name)" "$modulesdir/vmlinuz"
+
+  # Used by mkinitcpio to name the kernel
+  echo "$pkgbase" | install -Dm644 /dev/stdin "$modulesdir/pkgbase"
+
+  echo "Installing modules..."
+  ZSTD_CLEVEL=19 make INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 \
+    DEPMOD=/doesnt/exist modules_install  # Suppress depmod
+
+  # remove build link
+  rm "$modulesdir"/build
+}
+
+_package-headers() {
+  pkgdesc="Headers and scripts for building modules for the $pkgdesc kernel"
+  depends=(
+    binutils
+    glibc
+    libelf
+    libgcc
+    openssl
+    pahole
+    xxhash
+    zlib
+    zstd
+  )
+  provides=(LINUX-HEADERS)
+
+  cd $_srcname
+  local builddir="$pkgdir/usr/lib/modules/$(<version)/build"
+
+  local karch
+  case $CARCH in
+    x86_64) karch=x86 ;;
+    *) echo "Unknown CARCH $CARCH"; exit 1 ;;
+  esac
+
+  echo "Installing build files..."
+  install -Dt "$builddir" -m644 .config Makefile Module.symvers System.map \
+    localversion.* version vmlinux tools/bpf/bpftool/vmlinux.h
+  install -Dt "$builddir/kernel" -m644 kernel/Makefile
+  install -Dt "$builddir/arch/$karch" -m644 arch/$karch/Makefile
+  cp -t "$builddir" -a scripts
+  ln -srt "$builddir" "$builddir/scripts/gdb/vmlinux-gdb.py"
+
+  if [[ $(scripts/config -s CONFIG_HAVE_STACK_VALIDATION) = y ]]; then
+    install -Dt "$builddir/tools/objtool" tools/objtool/objtool
+  fi
+
+  if [[ $(scripts/config -s CONFIG_DEBUG_INFO_BTF_MODULES) = y ]]; then
+    install -Dt "$builddir/tools/bpf/resolve_btfids" tools/bpf/resolve_btfids/resolve_btfids
+  fi
+
+  echo "Installing headers..."
+  cp -t "$builddir" -a include
+  cp -t "$builddir/arch/$karch" -a arch/$karch/include
+  install -Dt "$builddir/arch/$karch/kernel" -m644 arch/$karch/kernel/asm-offsets.s
+
+  install -Dt "$builddir/drivers/md" -m644 drivers/md/*.h
+  install -Dt "$builddir/net/mac80211" -m644 net/mac80211/*.h
+
+  # https://bugs.archlinux.org/task/13146
+  install -Dt "$builddir/drivers/media/i2c" -m644 drivers/media/i2c/msp3400-driver.h
+
+  # https://bugs.archlinux.org/task/20402
+  install -Dt "$builddir/drivers/media/usb/dvb-usb" -m644 drivers/media/usb/dvb-usb/*.h
+  install -Dt "$builddir/drivers/media/dvb-frontends" -m644 drivers/media/dvb-frontends/*.h
+  install -Dt "$builddir/drivers/media/tuners" -m644 drivers/media/tuners/*.h
+
+  # https://bugs.archlinux.org/task/71392
+  install -Dt "$builddir/drivers/iio/common/hid-sensors" -m644 drivers/iio/common/hid-sensors/*.h
+
+  echo "Installing KConfig files..."
+  find . -name 'Kconfig*' -exec install -Dm644 {} "$builddir/{}" \;
+
+  if [[ $(scripts/config -s CONFIG_RUST) = y ]]; then
+    echo "Installing Rust files..."
+    install -Dt "$builddir/rust" -m644 rust/*.rmeta
+    install -Dt "$builddir/rust" rust/*.so
+  fi
+
+  echo "Installing unstripped VDSO..."
+  make INSTALL_MOD_PATH="$pkgdir/usr" vdso_install \
+    link=  # Suppress build-id symlinks
+
+  echo "Removing unneeded architectures..."
+  local arch
+  for arch in "$builddir"/arch/*/; do
+    [[ $arch = */$karch/ ]] && continue
+    echo "Removing $(basename "$arch")"
+    rm -r "$arch"
+  done
+
+  echo "Removing documentation..."
+  rm -r "$builddir/Documentation"
+
+  echo "Removing broken symlinks..."
+  find -L "$builddir" -type l -printf 'Removing %P\n' -delete
+
+  echo "Removing loose objects..."
+  find "$builddir" -type f -name '*.o' -printf 'Removing %P\n' -delete
+
+  echo "Stripping build tools..."
+  local file
+  while read -rd '' file; do
+    case "$(file -Sib "$file")" in
+      application/x-sharedlib\;*)      # Libraries (.so)
+        strip -v $STRIP_SHARED "$file" ;;
+      application/x-archive\;*)        # Libraries (.a)
+        strip -v $STRIP_STATIC "$file" ;;
+      application/x-executable\;*)     # Binaries
+        strip -v $STRIP_BINARIES "$file" ;;
+      application/x-pie-executable\;*) # Relocatable binaries
+        strip -v $STRIP_SHARED "$file" ;;
+    esac
+  done < <(find "$builddir" -type f -perm -u+x ! -name vmlinux -print0)
+
+  echo "Stripping vmlinux..."
+  strip -v $STRIP_STATIC "$builddir/vmlinux"
+
+  echo "Adding symlink..."
+  mkdir -p "$pkgdir/usr/src"
+  ln -sr "$builddir" "$pkgdir/usr/src/$pkgbase"
+}
+
+pkgname=(
+  "$pkgbase"
+  "$pkgbase-headers"
+)
+for _p in "${pkgname[@]}"; do
+  eval "package_$_p() {
+    $(declare -f "_package${_p#$pkgbase}")
+    _package${_p#$pkgbase}
+  }"
+done
+
+# vim:set ts=8 sts=2 sw=2 et:

@@ -1,0 +1,27 @@
+diff --git a/drivers/platform/x86/apple-gmux.c b/drivers/platform/x86/apple-gmux.c
+--- a/drivers/platform/x86/apple-gmux.c
++++ b/drivers/platform/x86/apple-gmux.c
+@@ -110,7 +110,7 @@
+ 
+ static bool force_igd;
+ module_param(force_igd, bool, 0);
+-MODULE_PARM_DESC(force_idg, "Switch gpu to igd on module load. Make sure that you have apple-set-os set up and the iGPU is in `lspci -s 00:02.0`. (default: false) (bool)");
++MODULE_PARM_DESC(force_igd, "Switch gpu to igd on module load. Make sure that you have apple-set-os set up and the iGPU is in `lspci -s 00:02.0`. (default: false) (bool)");
+ 
+ static u8 gmux_pio_read8(struct apple_gmux_data *gmux_data, int port)
+ {
+@@ -955,12 +955,12 @@
+ 
+ 		pdev = pci_get_domain_bus_and_slot(0, 0, PCI_DEVFN(2, 0));
+ 		if (pdev) {
+-			pr_info("Switching to IGD");
++			pr_info("Switching to IGD\n");
+ 			gmux_switchto(VGA_SWITCHEROO_IGD);
+ 			vga_set_default_device(pdev);
+ 			pci_dev_put(pdev);
+ 		} else {
+-			pr_err("force_idg is true, but couldn't find iGPU at 00:02.0! Is apple-set-os working?");
++			pr_err("force_igd is true, but couldn't find iGPU at 00:02.0! Is apple-set-os working?\n");
+ 		}
+ 	}
+ 

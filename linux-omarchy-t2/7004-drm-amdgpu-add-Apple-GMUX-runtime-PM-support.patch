@@ -1,0 +1,200 @@
+diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu.h b/drivers/gpu/drm/amd/amdgpu/amdgpu.h
+--- a/drivers/gpu/drm/amd/amdgpu/amdgpu.h
++++ b/drivers/gpu/drm/amd/amdgpu/amdgpu.h
+@@ -1402,6 +1402,7 @@
+ int amdgpu_device_link_reset(struct amdgpu_device *adev);
+ bool amdgpu_device_supports_atpx(struct amdgpu_device *adev);
+ bool amdgpu_device_supports_px(struct amdgpu_device *adev);
++bool amdgpu_device_supports_gmux(struct amdgpu_device *adev);
+ bool amdgpu_device_supports_boco(struct amdgpu_device *adev);
+ bool amdgpu_device_supports_smart_shift(struct amdgpu_device *adev);
+ int amdgpu_device_supports_baco(struct amdgpu_device *adev);
+diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
+--- a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
++++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
+@@ -34,6 +34,7 @@
+ #include <linux/slab.h>
+ #include <linux/iommu.h>
+ #include <linux/pci.h>
++#include <linux/dmi.h>
+ #include <linux/pci-p2pdma.h>
+ #include <linux/apple-gmux.h>
+ #include <linux/nospec.h>
+@@ -568,6 +569,22 @@
+ 	return false;
+ }
+ 
++static const struct dmi_system_id amdgpu_gmux_runpm_dmi_table[] = {
++	{
++		.matches = {
++			DMI_MATCH(DMI_PRODUCT_NAME, "MacBookPro15,1"),
++		},
++	},
++	{ }
++};
++
++bool amdgpu_device_supports_gmux(struct amdgpu_device *adev)
++{
++	return dmi_check_system(amdgpu_gmux_runpm_dmi_table) &&
++	       !dev_is_removable(&adev->pdev->dev) &&
++	       apple_gmux_detect(NULL, NULL);
++}
++
+ /**
+  * amdgpu_device_supports_boco - Is the device a dGPU with ACPI power resources
+  *
+@@ -631,6 +648,9 @@
+ 			/* enable PX as runtime mode */
+ 			adev->pm.rpm_mode = AMDGPU_RUNPM_PX;
+ 			dev_info(adev->dev, "Using ATPX for runtime pm\n");
++		} else if (amdgpu_device_supports_gmux(adev)) {
++			adev->pm.rpm_mode = AMDGPU_RUNPM_GMUX;
++			dev_info(adev->dev, "Using Apple GMUX for runtime pm\n");
+ 		} else if (amdgpu_device_supports_boco(adev)) {
+ 			/* enable boco as runtime mode */
+ 			adev->pm.rpm_mode = AMDGPU_RUNPM_BOCO;
+@@ -3760,7 +3780,7 @@
+ {
+ 	struct pci_dev *pdev = adev->pdev;
+ 	int r, i;
+-	bool px = false;
++	bool gmux, px = false;
+ 	u32 max_MBps;
+ 	int tmp;
+ 
+@@ -4193,13 +4213,14 @@
+ 		vga_client_register(adev->pdev, amdgpu_device_vga_set_decode);
+ 
+ 	px = amdgpu_device_supports_px(adev);
++	gmux = amdgpu_device_supports_gmux(adev);
+ 
+ 	if (px || (!dev_is_removable(&adev->pdev->dev) &&
+-				apple_gmux_detect(NULL, NULL)))
++		   apple_gmux_detect(NULL, NULL)))
+ 		vga_switcheroo_register_client(adev->pdev,
+-					       &amdgpu_switcheroo_ops, px);
++					       &amdgpu_switcheroo_ops, px || gmux);
+ 
+-	if (px)
++	if (px || gmux)
+ 		vga_switcheroo_init_domain_pm_ops(adev->dev, &adev->vga_pm_domain);
+ 
+ 	adev->pm_nb.notifier_call = amdgpu_device_pm_notifier;
+@@ -4327,7 +4348,7 @@
+ void amdgpu_device_fini_sw(struct amdgpu_device *adev)
+ {
+ 	int i, idx;
+-	bool px;
++	bool gmux, px;
+ 
+ 	amdgpu_device_ip_fini(adev);
+ 	amdgpu_fence_driver_sw_fini(adev);
+@@ -4358,12 +4379,13 @@
+ 	adev->xcp_mgr = NULL;
+ 
+ 	px = amdgpu_device_supports_px(adev);
++	gmux = amdgpu_device_supports_gmux(adev);
+ 
+ 	if (px || (!dev_is_removable(&adev->pdev->dev) &&
+ 				apple_gmux_detect(NULL, NULL)))
+ 		vga_switcheroo_unregister_client(adev->pdev);
+ 
+-	if (px)
++	if (px || gmux)
+ 		vga_switcheroo_fini_domain_pm_ops(adev->dev);
+ 
+ 	if ((adev->pdev->class >> 8) == PCI_CLASS_DISPLAY_VGA)
+diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
+--- a/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
++++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
+@@ -2488,11 +2488,12 @@
+ 		DRM_ERROR("Creating debugfs files failed (%d).\n", ret);
+ 
+ 	if (adev->pm.rpm_mode != AMDGPU_RUNPM_NONE) {
+-		/* only need to skip on ATPX */
++		/* ATPX requires a full system-sleep transition. */
+ 		if (amdgpu_device_supports_px(adev))
+ 			dev_pm_set_driver_flags(ddev->dev, DPM_FLAG_NO_DIRECT_COMPLETE);
+-		/* we want direct complete for BOCO */
+-		if (amdgpu_device_supports_boco(adev))
++		/* BOCO and GMUX can remain runtime suspended across system sleep. */
++		if (amdgpu_device_supports_boco(adev) ||
++		    adev->pm.rpm_mode == AMDGPU_RUNPM_GMUX)
+ 			dev_pm_set_driver_flags(ddev->dev, DPM_FLAG_SMART_PREPARE |
+ 						DPM_FLAG_SMART_SUSPEND |
+ 						DPM_FLAG_MAY_SKIP_RESUME);
+@@ -2601,7 +2602,9 @@
+ 	/* Return a positive number here so
+ 	 * DPM_FLAG_SMART_SUSPEND works properly
+ 	 */
+-	if (amdgpu_device_supports_boco(adev) && pm_runtime_suspended(dev))
++	if ((amdgpu_device_supports_boco(adev) ||
++	     adev->pm.rpm_mode == AMDGPU_RUNPM_GMUX) &&
++	    pm_runtime_suspended(dev))
+ 		return 1;
+ 
+ 	/* if we will not support s3 or s2i for the device
+@@ -2863,7 +2866,8 @@
+ 	}
+ 
+ 	adev->in_runpm = true;
+-	if (adev->pm.rpm_mode == AMDGPU_RUNPM_PX)
++	if (adev->pm.rpm_mode == AMDGPU_RUNPM_PX ||
++	    adev->pm.rpm_mode == AMDGPU_RUNPM_GMUX)
+ 		drm_dev->switch_power_state = DRM_SWITCH_POWER_CHANGING;
+ 
+ 	/*
+@@ -2890,8 +2894,9 @@
+ 	if (adev->pm.rpm_mode == AMDGPU_RUNPM_BOCO)
+ 		adev->mp1_state = PP_MP1_STATE_NONE;
+ 
+-	if (adev->pm.rpm_mode == AMDGPU_RUNPM_PX) {
+-		/* Only need to handle PCI state in the driver for ATPX
++	if (adev->pm.rpm_mode == AMDGPU_RUNPM_PX ||
++	    adev->pm.rpm_mode == AMDGPU_RUNPM_GMUX) {
++		/* Only need to handle PCI state in the driver for ATPX and GMUX.
+ 		 * PCI core handles it for _PR3.
+ 		 */
+ 		amdgpu_device_cache_pci_state(pdev);
+@@ -2938,10 +2943,11 @@
+ 	if (!pci_device_is_present(adev->pdev))
+ 		adev->no_hw_access = true;
+ 
+-	if (adev->pm.rpm_mode == AMDGPU_RUNPM_PX) {
++	if (adev->pm.rpm_mode == AMDGPU_RUNPM_PX ||
++	    adev->pm.rpm_mode == AMDGPU_RUNPM_GMUX) {
+ 		drm_dev->switch_power_state = DRM_SWITCH_POWER_CHANGING;
+ 
+-		/* Only need to handle PCI state in the driver for ATPX
++		/* Only need to handle PCI state in the driver for ATPX and GMUX.
+ 		 * PCI core handles it for _PR3.
+ 		 */
+ 		pci_set_power_state(pdev, PCI_D0);
+@@ -2961,12 +2967,14 @@
+ 	}
+ 	ret = amdgpu_device_resume(drm_dev, false);
+ 	if (ret) {
+-		if (adev->pm.rpm_mode == AMDGPU_RUNPM_PX)
++		if (adev->pm.rpm_mode == AMDGPU_RUNPM_PX ||
++		    adev->pm.rpm_mode == AMDGPU_RUNPM_GMUX)
+ 			pci_disable_device(pdev);
+ 		return ret;
+ 	}
+ 
+-	if (adev->pm.rpm_mode == AMDGPU_RUNPM_PX)
++	if (adev->pm.rpm_mode == AMDGPU_RUNPM_PX ||
++	    adev->pm.rpm_mode == AMDGPU_RUNPM_GMUX)
+ 		drm_dev->switch_power_state = DRM_SWITCH_POWER_ON;
+ 
+ 	amdgpu_restore_umd_profile_pstate_after_runpm(adev);
+diff --git a/drivers/gpu/drm/amd/pm/inc/amdgpu_dpm.h b/drivers/gpu/drm/amd/pm/inc/amdgpu_dpm.h
+--- a/drivers/gpu/drm/amd/pm/inc/amdgpu_dpm.h
++++ b/drivers/gpu/drm/amd/pm/inc/amdgpu_dpm.h
+@@ -48,6 +48,7 @@
+ enum amdgpu_runpm_mode {
+ 	AMDGPU_RUNPM_NONE,
+ 	AMDGPU_RUNPM_PX,
++	AMDGPU_RUNPM_GMUX,
+ 	AMDGPU_RUNPM_BOCO,
+ 	AMDGPU_RUNPM_BACO,
+ 	AMDGPU_RUNPM_BAMACO,
