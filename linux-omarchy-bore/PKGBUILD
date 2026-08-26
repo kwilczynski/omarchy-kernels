@@ -2,7 +2,7 @@
 # Adopted from the Arch Linux linux package.
 
 pkgbase=linux-omarchy-bore
-pkgver=7.2.0
+pkgver=7.2.1rc1
 pkgrel=1
 pkgdesc='Omarchy Linux (BORE CPU scheduler, ADIOS I/O scheduler)'
 url='https://omarchy.org'
@@ -35,14 +35,21 @@ options=(
   !debug
   !strip
 )
-_srcname=linux-${pkgver%.*}
+_major=${pkgver%%.*}
+if [[ $pkgver == *rc* ]]; then
+  _srcname=linux-${pkgver%.*}
+  _rcpatch=patch-${pkgver//rc/-rc}
+else
+  _srcname=linux-$pkgver
+fi
 source=(
-  https://cdn.kernel.org/pub/linux/kernel/v${pkgver%%.*}.x/${_srcname}.tar.{xz,sign}
+  https://cdn.kernel.org/pub/linux/kernel/v${_major}.x/${_srcname}.tar.{xz,sign}
+  ${_rcpatch:+https://cdn.kernel.org/pub/linux/kernel/v${_major}.x/stable-review/${_rcpatch}.xz}
+  ${_rcpatch:+https://cdn.kernel.org/pub/linux/kernel/v${_major}.x/stable-review/${_rcpatch}.sign}
   0010-archlinux-base-7.1.patch{,.sig}
   0020-drm-i915-alpm-limit-pr-alpm-to-panel-replay.patch{,.sig}
   0028-drm-i915-psr-exit-Panel-Replay-for-ALPM-lag.patch{,.sig}
   0029-drm-edid-populate-monitor-range-from-displayid-adaptive-sync.patch{,.sig}
-  0030-drm-xe-flat-ccs-round-down.patch{,.sig}
   0100-bore-6.8.0.patch{,.sig}
   0110-adios-3.2.0.patch{,.sig}
 )
@@ -54,6 +61,8 @@ validpgpkeys=(
 )
 b2sums=('cf5f3d87b96f223034c47c6e5fc972fe52c2556310eb2f064632537b8727231135a8540179fd5d51343738c8a51f51f09c7e8da374324b68551c84a4124bb71b'
         'SKIP'
+        '5099005a74c487f21260f9e05468acf3264c26f22f2a7070066f9b10ad3ccf6e7d3501a4ee88b3f6ecf05dcf30423517690f3153c3032e9de12f05a9fa16ea32'
+        'SKIP'
         '42fcae4796d0dae7828ec60643a82e1a82127b5af104ea1c4b1debd78868dabae0876ad81512e1b758b95f316809100d8e7de016ff65079bfe7104745c77682b'
         'SKIP'
         '505bf01a9d6b0926b557b673bb686d1a4ff73ee70539991e52272fbf58aad3ea25cf5ffc5c2d094a2d5e78b18a1a134f2ab530f595073a2d3eba9ff2c1418e1e'
@@ -61,8 +70,6 @@ b2sums=('cf5f3d87b96f223034c47c6e5fc972fe52c2556310eb2f064632537b8727231135a8540
         'b33b46c37f12f7650a67c3731b87ff84add1ac8623cc96b52223a1ef9946bcaa990ed7c7036674e228335f57ec9ed421ea4d6c1dd72d19b516215d9ac2c7c3ee'
         'SKIP'
         '1b340a502dcf5a1680caf5320b3aa72aa4317e4cf1d877c1f6425e281a5668d5f092417e1f282371c0a211344f5c187fb3bdaf3f97c7e122951edf7e4c08ca58'
-        'SKIP'
-        '3bc3bcc103aa34a3a34b4bdc033978f05aa3569a871be6a78ad68b33854f3b50002a74cdf37b7ab002159fe85b2b2e388aeb94e7166d6b7493a4858a33b0a8b5'
         'SKIP'
         '03b790b2ead787c3ba16ac1b644ec1db88bf265a916ac653b91ac5eda036b58b40e087b960b943ac7faf6f383e1a13bf99fa3a7f84020be087cd6cf2924c3308'
         'SKIP'
@@ -73,6 +80,8 @@ b2sums_x86_64=('6aa981afdf012b1b3cfa8f51e4fa45952c56f11d838ee2a9ad9b112ce3380a2d
 # https://www.kernel.org/pub/linux/kernel/v7.x/sha256sums.asc
 sha256sums=('f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3'
             'SKIP'
+            '2707f832541d5d49d26f352e2ec169658e9e0d90117a8420408d37f378cd5c5a'
+            'SKIP'
             '29454b640531021cced21d1b715b69413cab1e0a5c8f3b76d3f4e1921cf063d8'
             'SKIP'
             '1f0c958b64ba48b8dc8b5548e1ad1934b8d4903fc16fec15014759e3681ea275'
@@ -80,8 +89,6 @@ sha256sums=('f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3'
             '47994d576008a377de612ed77e6b2e7bc6b24ad3a30a6d157646d380ae323142'
             'SKIP'
             '5cc215215fed4247c2d6b9732deff586331a07d54c3b00538a81921093a3a1a1'
-            'SKIP'
-            'bb63c36475bb06efcdfbb7d0d68646452dd468c202f646346449a1f64087288d'
             'SKIP'
             '3ed228df4dc55360c1ecbc155ea8ac1a940c90e08c7e591f178c300a8c6f934f'
             'SKIP'
@@ -98,6 +105,11 @@ prepare() {
   echo "Setting version..."
   echo "-$pkgrel" > localversion.10-pkgrel
   echo "${pkgbase#linux}" > localversion.20-pkgname
+
+  if [[ -n ${_rcpatch:-} ]]; then
+    echo "Applying patch $_rcpatch..."
+    patch -Np1 --fuzz=0 < "../$_rcpatch"
+  fi
 
   local src
   for src in "${source[@]}"; do
