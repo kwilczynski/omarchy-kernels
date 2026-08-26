@@ -1,0 +1,6 @@
+FILES.txt
+
+*.SHA256SUMS
+*.SHA256SUMS.*
+
+*.tar.zst
