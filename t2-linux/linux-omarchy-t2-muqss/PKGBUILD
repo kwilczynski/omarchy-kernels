@@ -1,10 +1,10 @@
 # Maintainer: The Omarchy Authors
 # Adopted from the Arch Linux linux package.
 
-pkgbase=linux-omarchy-t2
+pkgbase=linux-omarchy-t2-muqss
 pkgver=7.2.1rc1
 pkgrel=1
-pkgdesc='Omarchy Linux (Apple T2 Macs)'
+pkgdesc='Omarchy Linux (Apple T2 Macs, MuQSS CPU scheduler)'
 url='https://omarchy.org'
 arch=(
   x86_64
@@ -47,6 +47,7 @@ source=(
   ${_rcpatch:+https://cdn.kernel.org/pub/linux/kernel/v${_major}.x/stable-review/${_rcpatch}.xz}
   ${_rcpatch:+https://cdn.kernel.org/pub/linux/kernel/v${_major}.x/stable-review/${_rcpatch}.sign}
   0010-archlinux-base-7.1.patch{,.sig}
+  0100-muqss-0.31.patch{,.sig}
   1001-Add-t2bce-driver-stack.patch{,.sig}
   1002-Integrate-t2bce-driver-stack.patch{,.sig}
   2008-i915-4-lane-quirk-for-mbp15-1.patch{,.sig}
@@ -66,6 +67,7 @@ source=(
   3007-applesmc-Add-iMacPro-to-applesmc_whitelist.patch{,.sig}
   3008-applesmc-make-applesmc_remove-void.patch{,.sig}
   3009-applesmc-battery-charge-limiter.patch{,.sig}
+  3010-applesmc-fix-lockless-cache-validation-data-race.patch{,.sig}
   4001a-asahi-trackpad-infra.patch{,.sig}
   4001b-asahi-trackpad-magicmouse.patch{,.sig}
   4003-HID-apple-ignore-the-trackpad-on-T2-Macs.patch{,.sig}
@@ -99,6 +101,8 @@ b2sums=('cf5f3d87b96f223034c47c6e5fc972fe52c2556310eb2f064632537b8727231135a8540
         '5099005a74c487f21260f9e05468acf3264c26f22f2a7070066f9b10ad3ccf6e7d3501a4ee88b3f6ecf05dcf30423517690f3153c3032e9de12f05a9fa16ea32'
         'SKIP'
         '42fcae4796d0dae7828ec60643a82e1a82127b5af104ea1c4b1debd78868dabae0876ad81512e1b758b95f316809100d8e7de016ff65079bfe7104745c77682b'
+        'SKIP'
+        'a758f34fd0a4ae8430c3271bd0adb216955d10a0378f3c27c24cad213135b53451a3336ccc694dcf62a840d96a3e2eead6674713386cd6ac29c15e194b4c8d88'
         'SKIP'
         '38efb4ee539486d497e778ea22a26cbd0eacce9780fc04b27579770cea95c464290b4f46c18c6105710296c64ce0201a3fb705265748495fd406ff91e56defdc'
         'SKIP'
@@ -137,6 +141,8 @@ b2sums=('cf5f3d87b96f223034c47c6e5fc972fe52c2556310eb2f064632537b8727231135a8540
         'c67a9bb66944c6a51ab608c39d7c45cba3a9f6dacb1d8d3cd808dbcede74933eab9c009b92c308449dbd98742056ffe847e0a511700ca36bef235226b67e73d7'
         'SKIP'
         '55adcccbda725dc6e118e81289b99af1ac79116c4484165d390c48095690d9f22778d8fbd168e2307d6c9e2498296dafac5bf8ae7e4f712e4129261d43eafbf2'
+        'SKIP'
+        '0c24f7ee0c42d0b6631fc3401b4d2294045225fd12a1d4d0b85e80022d5765fa0dea3f7ea9de239272bad5ddd72f7f4292e5f57d5120205ba7eb699a9d03a18e'
         'SKIP'
         'cd6c47e1c1bb82cd8ba2e25792a7cf31e9affe0227379251cf89a143aed657d33b0f0bd26ee447f3ecffe6637ddef93240b1cf5820867c71b5764a37afc1d035'
         'SKIP'
@@ -180,7 +186,7 @@ b2sums=('cf5f3d87b96f223034c47c6e5fc972fe52c2556310eb2f064632537b8727231135a8540
         'SKIP'
         'e9fd3630616f96596685415b40a132a7433cff541a1f071d249484c4b841e7882582f6cddce8e8b8c09b36a65f41d102c224597c1037b52b7cc0232d5ac2039d'
         'SKIP')
-b2sums_x86_64=('44ca49a7fda592e16834fefd208f1811f933727dab1c8d6f521ecdf01511e3c84b6e85c8a9da0ae93753d2a7da7cfeacda2cfd0b007f64cf1c8de4a4acfd7c1b')
+b2sums_x86_64=('9171a07e9f9f286c98f709759f6bd88db1499bcde16dc11934dfab481cbfb709a69ded6d24c2725d5835dfde921ab8def4c9e0575ad56cb65836d72001410578')
 
 # https://www.kernel.org/pub/linux/kernel/v7.x/sha256sums.asc
 sha256sums=('f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3'
@@ -188,6 +194,8 @@ sha256sums=('f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3'
             '2707f832541d5d49d26f352e2ec169658e9e0d90117a8420408d37f378cd5c5a'
             'SKIP'
             '29454b640531021cced21d1b715b69413cab1e0a5c8f3b76d3f4e1921cf063d8'
+            'SKIP'
+            'da4d74f2e65bcb9aa42a519b37217d6a3562ffe7bcafe78ade167f1ddc352021'
             'SKIP'
             '7d050bd960376142f8de7d9ca7f38ae9f50f99e697a8de6da22d3759fbc96731'
             'SKIP'
@@ -226,6 +234,8 @@ sha256sums=('f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3'
             'ef358a2b01757497461bbb070313202742f4f733120f0418236e57784add88cd'
             'SKIP'
             'eef2bb88d8d8ebdcef8e1f84f10784bf2467e62da23b0d5cd28e732eea2bc4e3'
+            'SKIP'
+            'da99fa372a9f4cd2cb6021fdb9bb7797fa96ada4282cd84830055402808c3119'
             'SKIP'
             '6a8e74328cac6477469fb0ae9f16c70ba7d76d56f8836d4c9b0b45eb2cba0432'
             'SKIP'
@@ -321,7 +331,6 @@ _package() {
   optdepends=(
     "$pkgbase-headers: headers and scripts for building modules"
     'linux-firmware: firmware images needed for some devices'
-    'scx-scheds: to use sched-ext schedulers'
     'sof-firmware: firmware for Intel SOF audio'
     'wireless-regdb: to set the correct wireless channels of your country'
   )

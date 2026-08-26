@@ -1,0 +1,31 @@
+diff --git a/drivers/hwmon/applesmc.c b/drivers/hwmon/applesmc.c
+--- a/drivers/hwmon/applesmc.c
++++ b/drivers/hwmon/applesmc.c
+@@ -34,6 +34,7 @@
+ #include <linux/workqueue.h>
+ #include <linux/err.h>
+ #include <linux/bits.h>
++#include <asm/barrier.h>
+ 
+ /* data port used by Apple SMC */
+ #define APPLESMC_DATA_PORT	0
+@@ -594,7 +595,8 @@
+ 	char key[4];
+ 	int ret = 0;
+ 
+-	if (cache->valid)
++	/* Pairs with smp_store_release() to ensure cache contents are visible */
++	if (smp_load_acquire(&cache->valid))
+ 		return cache;
+ 
+ 	mutex_lock(&smc->reg.mutex);
+@@ -609,7 +611,8 @@
+ 	ret = get_smc_key_info(smc, key, cache);
+ 	if (ret)
+ 		goto out;
+-	cache->valid = true;
++	/* Pairs with smp_load_acquire() to commit cache contents before setting valid */
++	smp_store_release(&cache->valid, true);
+ 
+ out:
+ 	mutex_unlock(&smc->reg.mutex);

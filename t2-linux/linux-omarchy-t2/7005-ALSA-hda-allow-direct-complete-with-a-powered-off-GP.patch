@@ -1,0 +1,51 @@
+diff --git a/sound/hda/controllers/intel.c b/sound/hda/controllers/intel.c
+--- a/sound/hda/controllers/intel.c
++++ b/sound/hda/controllers/intel.c
+@@ -334,9 +334,11 @@
+ #ifdef SUPPORT_VGA_SWITCHEROO
+ #define use_vga_switcheroo(chip)	((chip)->use_vga_switcheroo)
+ #define needs_eld_notify_link(chip)	((chip)->bus.keep_power)
++static bool azx_vga_is_powered_off(struct azx *chip);
+ #else
+ #define use_vga_switcheroo(chip)	0
+ #define needs_eld_notify_link(chip)	false
++#define azx_vga_is_powered_off(chip)	false
+ #endif
+ 
+ static const char * const driver_short_names[] = {
+@@ -1025,6 +1027,10 @@
+ 		return 0;
+ 
+ 	chip = card->private_data;
++	/* A positive return allows the PM core to use direct complete. */
++	if (azx_vga_is_powered_off(chip))
++		return 1;
++
+ 	chip->pm_prepared = 1;
+ 	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
+ 
+@@ -1185,6 +1191,24 @@
+ #ifdef SUPPORT_VGA_SWITCHEROO
+ static struct pci_dev *get_bound_vga(struct pci_dev *pci);
+ 
++static bool azx_vga_is_powered_off(struct azx *chip)
++{
++	struct pci_dev *pci;
++	bool powered_off = false;
++
++	if (!use_vga_switcheroo(container_of(chip, struct hda_intel, chip)))
++		return false;
++
++	pci = get_bound_vga(chip->pci);
++	if (pci) {
++		powered_off = pm_runtime_suspended(&pci->dev) &&
++			vga_switcheroo_get_client_state(pci) == VGA_SWITCHEROO_OFF;
++		pci_dev_put(pci);
++	}
++
++	return powered_off;
++}
++
+ static void azx_vs_set_state(struct pci_dev *pci,
+ 			     enum vga_switcheroo_state state)
+ {

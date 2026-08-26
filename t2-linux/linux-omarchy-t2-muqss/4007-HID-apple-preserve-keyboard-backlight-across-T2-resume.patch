@@ -1,0 +1,54 @@
+diff --git a/drivers/hid/hid-apple.c b/drivers/hid/hid-apple.c
+--- a/drivers/hid/hid-apple.c
++++ b/drivers/hid/hid-apple.c
+@@ -91,6 +91,9 @@
+ 	struct hid_device *hdev;
+ };
+ 
++/* T2 VHCI re-enumerates the internal keyboard across system resume. */
++static int apple_backlight_resume_brightness = -1;
++
+ struct apple_backlight_config_report {
+ 	u8 report_id;
+ 	u8 version;
+@@ -837,6 +840,7 @@
+ static int apple_backlight_init(struct hid_device *hdev)
+ {
+ 	int ret;
++	int brightness;
+ 	struct apple_sc *asc = hid_get_drvdata(hdev);
+ 	struct apple_backlight_config_report *rep;
+ 
+@@ -874,13 +878,20 @@
+ 	asc->backlight->cdev.name = "apple::kbd_backlight";
+ 	asc->backlight->cdev.max_brightness = le16_to_cpu(rep->backlight_on_max);
+ 	asc->backlight->cdev.brightness_set_blocking = apple_backlight_led_set;
+-	asc->backlight->cdev.flags = LED_CORE_SUSPENDRESUME;
++	/* VHCI re-enumeration restores the cached brightness in the next probe. */
++
++	brightness = READ_ONCE(apple_backlight_resume_brightness);
++	if (brightness < 0)
++		brightness = LED_OFF;
++	else
++		brightness = min_t(int, brightness, rep->backlight_on_max);
+ 
+-	ret = apple_backlight_set(hdev, 0, 0);
++	ret = apple_backlight_set(hdev, brightness, 0);
+ 	if (ret < 0) {
+ 		hid_err(hdev, "backlight set request failed: %d\n", ret);
+ 		goto cleanup_and_exit;
+ 	}
++	asc->backlight->cdev.brightness = brightness;
+ 
+ 	ret = devm_led_classdev_register(&hdev->dev, &asc->backlight->cdev);
+ 
+@@ -1020,6 +1031,9 @@
+ 
+ 	if (asc->quirks & APPLE_RDESC_BATTERY)
+ 		timer_delete_sync(&asc->battery_timer);
++	if (asc->backlight)
++		WRITE_ONCE(apple_backlight_resume_brightness,
++			   asc->backlight->cdev.brightness);
+ 
+ 	hid_hw_stop(hdev);
+ }
