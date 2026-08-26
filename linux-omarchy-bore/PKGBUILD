@@ -52,6 +52,7 @@ source=(
   0029-drm-edid-populate-monitor-range-from-displayid-adaptive-sync.patch{,.sig}
   0100-bore-6.8.0.patch{,.sig}
   0110-adios-3.2.0.patch{,.sig}
+  0400-btrfs.patch{,.sig}
 )
 source_x86_64=(config.x86_64)
 validpgpkeys=(
@@ -74,6 +75,8 @@ b2sums=('cf5f3d87b96f223034c47c6e5fc972fe52c2556310eb2f064632537b8727231135a8540
         '03b790b2ead787c3ba16ac1b644ec1db88bf265a916ac653b91ac5eda036b58b40e087b960b943ac7faf6f383e1a13bf99fa3a7f84020be087cd6cf2924c3308'
         'SKIP'
         '4f58fc77bc13fe9492fe4662e0a4b879a8a1616e271c2095959dccdffed9b0a866a4eb9dc3ac74fad9eed11c362e43a7bfa56d8ea6f571572a63ff4550c5dc23'
+        'SKIP'
+        'e9fd3630616f96596685415b40a132a7433cff541a1f071d249484c4b841e7882582f6cddce8e8b8c09b36a65f41d102c224597c1037b52b7cc0232d5ac2039d'
         'SKIP')
 b2sums_x86_64=('6aa981afdf012b1b3cfa8f51e4fa45952c56f11d838ee2a9ad9b112ce3380a2d2069e697cdfefb174d18df97224d35a492d15fde2b7d29e9ffd823f4737859cf')
 
@@ -93,6 +96,8 @@ sha256sums=('f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3'
             '3ed228df4dc55360c1ecbc155ea8ac1a940c90e08c7e591f178c300a8c6f934f'
             'SKIP'
             '07baad05112a47cb0aea81191502c87e496e13b4f23a6ec36ea65bb4219c35a8'
+            'SKIP'
+            'b5f3b271f8908c9136c3533f1ac4e05cdc712a9f1e6066a85b7e0555388d9fda'
             'SKIP')
 
 export KBUILD_BUILD_HOST=omarchy

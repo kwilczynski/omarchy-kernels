@@ -50,6 +50,7 @@ source=(
   0020-drm-i915-alpm-limit-pr-alpm-to-panel-replay.patch{,.sig}
   0028-drm-i915-psr-exit-Panel-Replay-for-ALPM-lag.patch{,.sig}
   0029-drm-edid-populate-monitor-range-from-displayid-adaptive-sync.patch{,.sig}
+  0400-btrfs.patch{,.sig}
 )
 source_x86_64=(config.x86_64)
 validpgpkeys=(
@@ -68,6 +69,8 @@ b2sums=('cf5f3d87b96f223034c47c6e5fc972fe52c2556310eb2f064632537b8727231135a8540
         'b33b46c37f12f7650a67c3731b87ff84add1ac8623cc96b52223a1ef9946bcaa990ed7c7036674e228335f57ec9ed421ea4d6c1dd72d19b516215d9ac2c7c3ee'
         'SKIP'
         '1b340a502dcf5a1680caf5320b3aa72aa4317e4cf1d877c1f6425e281a5668d5f092417e1f282371c0a211344f5c187fb3bdaf3f97c7e122951edf7e4c08ca58'
+        'SKIP'
+        'e9fd3630616f96596685415b40a132a7433cff541a1f071d249484c4b841e7882582f6cddce8e8b8c09b36a65f41d102c224597c1037b52b7cc0232d5ac2039d'
         'SKIP')
 b2sums_x86_64=('2a402f5d457797d7432cbb7c52b9fce9f67e99e21a6593e58fc1a76bdf2bf7736d533c96934164612537066e3382d59878c89ac329d8c2a3eff7652ce957c398')
 
@@ -83,6 +86,8 @@ sha256sums=('f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3'
             '47994d576008a377de612ed77e6b2e7bc6b24ad3a30a6d157646d380ae323142'
             'SKIP'
             '5cc215215fed4247c2d6b9732deff586331a07d54c3b00538a81921093a3a1a1'
+            'SKIP'
+            'b5f3b271f8908c9136c3533f1ac4e05cdc712a9f1e6066a85b7e0555388d9fda'
             'SKIP')
 
 export KBUILD_BUILD_HOST=omarchy

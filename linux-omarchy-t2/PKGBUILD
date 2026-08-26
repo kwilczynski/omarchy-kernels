@@ -86,6 +86,7 @@ source=(
   8002-Necessary-modifications-to-build-APFS-with-the-kerne.patch{,.sig}
   9001-ACPI-x86-Apple-T2-systems-need-early-CPU-offlining.patch{,.sig}
   9002-x86-cache-restore-AP-cache-state-while-bringing-CPUs.patch{,.sig}
+  0400-btrfs.patch{,.sig}
 )
 source_x86_64=(config.x86_64)
 validpgpkeys=(
@@ -176,6 +177,8 @@ b2sums=('cf5f3d87b96f223034c47c6e5fc972fe52c2556310eb2f064632537b8727231135a8540
         '02a4f42c7a586d5cbdf9123300ba30dbe0b3e3d981e2560827f7d1f70bb65f88e0b8d042ae8423c3b4d71612050f4c1d3efd42e9ac7d125f18778df31c1271d9'
         'SKIP'
         '7451149b2112ad8bd268697d65930df177100b8d052b858bc3891b521182772fa077ba50477326e94df706d1ab7da2985d077fc7ae103d0c85c8f3d40e87e8bc'
+        'SKIP'
+        'e9fd3630616f96596685415b40a132a7433cff541a1f071d249484c4b841e7882582f6cddce8e8b8c09b36a65f41d102c224597c1037b52b7cc0232d5ac2039d'
         'SKIP')
 b2sums_x86_64=('44ca49a7fda592e16834fefd208f1811f933727dab1c8d6f521ecdf01511e3c84b6e85c8a9da0ae93753d2a7da7cfeacda2cfd0b007f64cf1c8de4a4acfd7c1b')
 
@@ -263,6 +266,8 @@ sha256sums=('f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3'
             'afdc59a1fb12d024092eced440f31af432a331d7c57e51b5ceeecc52f3c078cf'
             'SKIP'
             'cc2a0c05fbf5fdaeb95247101728141f6d17f6988e22c79b48fcb57d239c1a0d'
+            'SKIP'
+            'b5f3b271f8908c9136c3533f1ac4e05cdc712a9f1e6066a85b7e0555388d9fda'
             'SKIP')
 
 export KBUILD_BUILD_HOST=omarchy
