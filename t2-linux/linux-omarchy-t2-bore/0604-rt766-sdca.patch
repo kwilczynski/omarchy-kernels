@@ -1,0 +1,2767 @@
+diff --git a/include/sound/sdca_asoc.h b/include/sound/sdca_asoc.h
+index ca35d5a..599a72f 100644
+--- a/include/sound/sdca_asoc.h
++++ b/include/sound/sdca_asoc.h
+@@ -25,6 +25,8 @@ struct snd_soc_dai_driver;
+ struct snd_soc_dai_ops;
+ struct snd_soc_dapm_route;
+ struct snd_soc_dapm_widget;
++struct snd_soc_pcm_stream;
++struct sdca_entity;
+ 
+ /* convenient macro to handle the mono volume in 7.8 fixed format representation */
+ #define SDCA_SINGLE_Q78_TLV(xname, xreg, xmin, xmax, xstep, tlv_array) \
+@@ -82,6 +84,11 @@ int sdca_asoc_populate_component(struct device *dev,
+ 				 struct snd_soc_dai_driver **dai_drv, int *num_dai_drv,
+ 				 const struct snd_soc_dai_ops *ops);
+ 
++int sdca_asoc_populate_rate_format(struct device *dev,
++				struct sdca_function_data *function,
++				struct sdca_entity *entity,
++				struct snd_soc_pcm_stream *stream);
++
+ int sdca_asoc_set_constraints(struct device *dev, struct regmap *regmap,
+ 			      struct sdca_function_data *function,
+ 			      struct snd_pcm_substream *substream,
+@@ -100,9 +107,9 @@ int sdca_asoc_q78_put_volsw(struct snd_kcontrol *kcontrol,
+ 			    struct snd_ctl_elem_value *ucontrol);
+ int sdca_asoc_q78_get_volsw(struct snd_kcontrol *kcontrol,
+ 			    struct snd_ctl_elem_value *ucontrol);
+-int sdca_asoc_pde_poll_actual_ps(struct device *dev, struct regmap *regmap,
++int sdca_asoc_pde_poll_actual_ps(struct regmap *regmap,
+ 				 int function_id, int entity_id,
+-			    int from_ps, int to_ps,
+-			    const struct sdca_pde_delay *pde_delays,
+-			    int num_delays);
++				 int from_ps, int to_ps,
++				 const struct sdca_pde_delay *pde_delays,
++				 int num_delays);
+ #endif // __SDCA_ASOC_H__
+diff --git a/include/sound/sdca_function.h b/include/sound/sdca_function.h
+index b148917..f65a1d6 100644
+--- a/include/sound/sdca_function.h
++++ b/include/sound/sdca_function.h
+@@ -1116,7 +1116,6 @@ struct sdca_entity_ge {
+ 
+ /**
+  * struct sdca_entity_hide - information specific to HIDE Entities
+- * @hid: HID device structure
+  * @num_hidtx_ids: number of HIDTx Report ID
+  * @num_hidrx_ids: number of HIDRx Report ID
+  * @hidtx_ids: HIDTx Report ID
+@@ -1127,11 +1126,8 @@ struct sdca_entity_ge {
+  * within this Device
+  * @max_delay: the maximum time in microseconds allowed for the Device
+  * to change the ownership from Device to Host
+- * @hid_report_desc: HID Report Descriptor for the HIDE Entity
+- * @hid_desc: HID descriptor for the HIDE Entity
+  */
+ struct sdca_entity_hide {
+-	struct hid_device *hid;
+ 	unsigned int *hidtx_ids;
+ 	unsigned int *hidrx_ids;
+ 	int num_hidtx_ids;
+@@ -1139,8 +1135,6 @@ struct sdca_entity_hide {
+ 	unsigned int af_number_list[SDCA_MAX_FUNCTION_COUNT];
+ 	unsigned int hide_reside_function_num;
+ 	unsigned int max_delay;
+-	unsigned char *hid_report_desc;
+-	struct hid_descriptor hid_desc;
+ };
+ 
+ /**
+@@ -1401,6 +1395,16 @@ struct sdca_fdl_data {
+ 	int num_sets;
+ };
+ 
++/**
++ * struct sdca_function_hid - information about a function's HID descriptors
++ * @report_desc: HID Report Descriptor for the HID Function
++ * @desc: HID descriptor for the HID Function
++ */
++struct sdca_function_hid {
++	unsigned char *report_desc;
++	struct hid_descriptor desc;
++};
++
+ /**
+  * struct sdca_function_data - top-level information for one SDCA function
+  * @desc: Pointer to short descriptor from initial parsing.
+@@ -1415,6 +1419,7 @@ struct sdca_fdl_data {
+  * @reset_max_delay: Maximum Function reset delay in microseconds, before an
+  * error should be reported.
+  * @fdl_data: FDL data for this Function, if available.
++ * @hid: HID data for this Function, if available.
+  */
+ struct sdca_function_data {
+ 	struct sdca_function_desc *desc;
+@@ -1430,6 +1435,10 @@ struct sdca_function_data {
+ 	unsigned int reset_max_delay;
+ 
+ 	struct sdca_fdl_data fdl_data;
++
++	union {
++		struct sdca_function_hid hid;
++	};
+ };
+ 
+ static inline u32 sdca_range(struct sdca_control_range *range,
+@@ -1451,8 +1460,7 @@ static inline u32 sdca_range_search(struct sdca_control_range *range,
+ 	return 0;
+ }
+ 
+-int sdca_parse_function(struct device *dev, struct sdw_slave *sdw,
+-			struct sdca_function_data *function);
++int sdca_parse_function(struct device *dev, struct sdca_function_data *function);
+ 
+ const char *sdca_find_terminal_name(enum sdca_terminal_type type);
+ 
+@@ -1469,5 +1477,7 @@ struct sdca_control_range *sdca_selector_find_range(struct device *dev,
+ struct sdca_cluster *sdca_id_find_cluster(struct device *dev,
+ 					  struct sdca_function_data *function,
+ 					  const int id);
++struct sdca_entity *sdca_find_entity_by_label(struct sdca_function_data *function,
++						     const char *entity_label);
+ 
+ #endif
+diff --git a/include/sound/sdca_hid.h b/include/sound/sdca_hid.h
+index 18bebbe..848081d 100644
+--- a/include/sound/sdca_hid.h
++++ b/include/sound/sdca_hid.h
+@@ -16,18 +16,21 @@ struct sdca_interrupt;
+ 
+ #if IS_ENABLED(CONFIG_SND_SOC_SDCA_HID)
+ 
+-int sdca_add_hid_device(struct device *dev, struct sdw_slave *sdw,
+-			struct sdca_entity *entity);
++int sdca_add_hid_device(struct sdca_interrupt *interrupt);
++void sdca_destroy_hid_device(struct sdca_interrupt *interrupt);
+ int sdca_hid_process_report(struct sdca_interrupt *interrupt);
+ 
+ #else
+ 
+-static inline int sdca_add_hid_device(struct device *dev, struct sdw_slave *sdw,
+-				      struct sdca_entity *entity)
++static inline int sdca_add_hid_device(struct sdca_interrupt *interrupt)
+ {
+ 	return 0;
+ }
+ 
++static inline void sdca_destroy_hid_device(struct sdca_interrupt *interrupt)
++{
++}
++
+ static inline int sdca_hid_process_report(struct sdca_interrupt *interrupt)
+ {
+ 	return 0;
+diff --git a/sound/soc/codecs/Kconfig b/sound/soc/codecs/Kconfig
+index d3298dc..934a103 100644
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -238,6 +238,7 @@ config SND_SOC_ALL_CODECS
+ 	imply SND_SOC_RT715_SDCA_SDW
+ 	imply SND_SOC_RT721_SDCA_SDW
+ 	imply SND_SOC_RT722_SDCA_SDW
++	imply SND_SOC_RT766_SDCA_SDW
+ 	imply SND_SOC_RT1308_SDW
+ 	imply SND_SOC_RT1316_SDW
+ 	imply SND_SOC_RT1318
+@@ -1983,6 +1984,15 @@ config SND_SOC_RT715_SDCA_SDW
+ 	select REGMAP_SOUNDWIRE
+ 	select REGMAP_SOUNDWIRE_MBQ
+ 
++config SND_SOC_RT766_SDCA_SDW
++	tristate "Realtek RT766 SDCA Codec - SDW"
++	depends on SOUNDWIRE
++	depends on SND_SOC_SDCA
++	select SND_SOC_SDCA_HID
++	select SND_SOC_SDCA_IRQ
++	select REGMAP_SOUNDWIRE
++	select REGMAP_SOUNDWIRE_MBQ
++
+ config SND_SOC_RT9120
+ 	tristate "Richtek RT9120 Stereo Class-D Amplifier"
+ 	depends on I2C
+diff --git a/sound/soc/codecs/Makefile b/sound/soc/codecs/Makefile
+index d2a6890..9c4b822 100644
+--- a/sound/soc/codecs/Makefile
++++ b/sound/soc/codecs/Makefile
+@@ -285,6 +285,7 @@ snd-soc-rt715-y := rt715.o rt715-sdw.o
+ snd-soc-rt715-sdca-y := rt715-sdca.o rt715-sdca-sdw.o
+ snd-soc-rt721-sdca-y := rt721-sdca.o rt721-sdca-sdw.o
+ snd-soc-rt722-sdca-y := rt722-sdca.o rt722-sdca-sdw.o
++snd-soc-rt766-sdca-y := rt766-sdca.o rt766-sdca-sdw.o
+ snd-soc-rt9120-y := rt9120.o
+ snd-soc-rt9123-y := rt9123.o
+ snd-soc-rt9123p-y := rt9123p.o
+@@ -726,6 +727,7 @@ obj-$(CONFIG_SND_SOC_RT715)     += snd-soc-rt715.o
+ obj-$(CONFIG_SND_SOC_RT715_SDCA_SDW)     += snd-soc-rt715-sdca.o
+ obj-$(CONFIG_SND_SOC_RT721_SDCA_SDW)     += snd-soc-rt721-sdca.o
+ obj-$(CONFIG_SND_SOC_RT722_SDCA_SDW)     += snd-soc-rt722-sdca.o
++obj-$(CONFIG_SND_SOC_RT766_SDCA_SDW)     += snd-soc-rt766-sdca.o
+ obj-$(CONFIG_SND_SOC_RT9120)	+= snd-soc-rt9120.o
+ obj-$(CONFIG_SND_SOC_RT9123)	+= snd-soc-rt9123.o
+ obj-$(CONFIG_SND_SOC_RT9123P)	+= snd-soc-rt9123p.o
+diff --git a/sound/soc/codecs/rt766-sdca-sdw.c b/sound/soc/codecs/rt766-sdca-sdw.c
+new file mode 100644
+index 0000000..8e76bf7
+--- /dev/null
++++ b/sound/soc/codecs/rt766-sdca-sdw.c
+@@ -0,0 +1,341 @@
++// SPDX-License-Identifier: GPL-2.0-only
++//
++// rt766-sdca-sdw.c -- rt766 SDCA ALSA SoC audio driver
++//
++// Copyright(c) 2026 Realtek Semiconductor Corp.
++//
++//
++
++#include <linux/delay.h>
++#include <linux/device.h>
++#include <linux/module.h>
++#include <linux/pm_runtime.h>
++#include <linux/soundwire/sdw_registers.h>
++#include <sound/sdca.h>
++#include <sound/sdca_function.h>
++#include "rt766-sdca.h"
++#include "rt766-sdca-sdw.h"
++
++#define RT766_PROBE_TIMEOUT 5000
++
++static bool rt766_sdca_readable_register(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case SDW_SCP_SDCA_INT1 ... SDW_SCP_SDCA_INTMASK4:
++	case RT766_VERSION_ID ... RT766_BOND_LATCH_ID:
++	case 0xc344 ... 0xc345:
++	case 0xc900:
++	case 0xc920:
++	case 0xd540 ... 0xd542:
++	case 0xf01e:
++	case RT766_HP_POWER_STATE ... RT766_HP_FSM_CTL2_1:
++	case 0x310100:
++	case RT766_MCU_PATCH_ADDR1_START ... RT766_MCU_PATCH_ADDR1_END:
++	case RT766_MCU_PATCH_ADDR2_START ... RT766_MCU_PATCH_ADDR2_END:
++	case RT766_MUTE_REG(UAJ, USER_FU41, 1):
++	case RT766_MUTE_REG(UAJ, USER_FU41, 2):
++	case RT766_VOLUME_REG(UAJ, USER_FU41, 1):
++	case RT766_VOLUME_REG(UAJ, USER_FU41, 2):
++	case RT766_MUTE_REG(UAJ, USER_FU36, 1):
++	case RT766_MUTE_REG(UAJ, USER_FU36, 2):
++	case RT766_VOLUME_REG(UAJ, USER_FU36, 1):
++	case RT766_VOLUME_REG(UAJ, USER_FU36, 2):
++	case RT766_PDE_REQ_REG(UAJ, PDE47):
++	case RT766_PDE_REQ_REG(UAJ, PDE34):
++	case RT766_SDCA_CTL(UAJ, CS41, SDCA_CTL_CS_SAMPLERATEINDEX):
++	case RT766_SDCA_CTL(UAJ, CS36, SDCA_CTL_CS_SAMPLERATEINDEX):
++	case RT766_FUNC_STATUS_REG(UAJ): /* 0x40480000 */
++	case RT766_PDE_ACTUAL_REG(UAJ, PDE47): /* 0x40481400 */
++	case RT766_PDE_ACTUAL_REG(UAJ, PDE34): /* 0x40481480 */
++	case RT766_GAIN_REG(UAJ, PLATFORM_FU33, 1):
++	case RT766_GAIN_REG(UAJ, PLATFORM_FU33, 2):
++	case RT766_SDCA_CTL(UAJ, GE49, SDCA_CTL_GE_SELECTED_MODE):
++	case RT766_SDCA_CTL(UAJ, GE49, SDCA_CTL_GE_DETECTED_MODE): /* 0x40600490 */
++	case RT766_PDE_REQ_REG(MIC, PDE11):
++	case RT766_MUTE_REG(MIC, USER_FU113, 1):
++	case RT766_MUTE_REG(MIC, USER_FU113, 2):
++	case RT766_MUTE_REG(MIC, USER_FU113, 3):
++	case RT766_MUTE_REG(MIC, USER_FU113, 4):
++	case RT766_VOLUME_REG(MIC, USER_FU113, 1):
++	case RT766_VOLUME_REG(MIC, USER_FU113, 2):
++	case RT766_VOLUME_REG(MIC, USER_FU113, 3):
++	case RT766_VOLUME_REG(MIC, USER_FU113, 4):
++	case RT766_FUNC_STATUS_REG(MIC): /* 0x40880000 */
++	case RT766_SDCA_CTL(MIC, CS113, SDCA_CTL_CS_SAMPLERATEINDEX):
++	case RT766_PDE_ACTUAL_REG(MIC, PDE11): /* 0x40881500 */
++	case RT766_FUNC_STATUS_REG(HID): /* 0x40c80000 */
++	/* 0x40c80080 - 0x40c80098 */
++	case RT766_SDCA_CTL(HID, HID101, SDCA_CTL_HIDE_HIDTX_CURRENTOWNER) ...
++		RT766_SDCA_CTL(HID, HID101, SDCA_CTL_HIDE_HIDTX_MESSAGELENGTH):
++	case RT766_MUTE_REG(AMP, USER_FU21, 1):
++	case RT766_MUTE_REG(AMP, USER_FU21, 2):
++	case RT766_VOLUME_REG(AMP, USER_FU21, 1):
++	case RT766_VOLUME_REG(AMP, USER_FU21, 2):
++	case RT766_PDE_REQ_REG(AMP, PDE23):
++	case RT766_FUNC_STATUS_REG(AMP): /* 0x41080000 */
++	case RT766_SDCA_CTL(AMP, PPU21, SDCA_CTL_PPU_POSTURENUMBER):
++	case RT766_SDCA_CTL(AMP, CS21, SDCA_CTL_CS_SAMPLERATEINDEX):
++	case RT766_PDE_ACTUAL_REG(AMP, PDE23): /* 0x41081980 */
++	case RT766_BUF_ADDR_HID1 ... RT766_BUF_ADDR_HID2:
++		return true;
++	default:
++		return false;
++	}
++}
++
++static bool rt766_sdca_volatile_register(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case SDW_SCP_SDCA_INT1 ... SDW_SCP_SDCA_INTMASK4:
++	case RT766_VERSION_ID ... RT766_BOND_LATCH_ID:
++	case 0xc344 ... 0xc345:
++	case 0xc900:
++	case 0xc920:
++	case 0xd540 ... 0xd542:
++	case 0xf01e:
++	case RT766_HP_POWER_STATE ... RT766_HP_FSM_CTL2_1:
++	case 0x310100:
++	case RT766_MCU_PATCH_ADDR1_START ... RT766_MCU_PATCH_ADDR1_END:
++	case RT766_MCU_PATCH_ADDR2_START ... RT766_MCU_PATCH_ADDR2_END:
++	case RT766_FUNC_STATUS_REG(UAJ):
++	case RT766_PDE_ACTUAL_REG(UAJ, PDE47):
++	case RT766_PDE_ACTUAL_REG(UAJ, PDE34):
++	case RT766_SDCA_CTL(UAJ, GE49, SDCA_CTL_GE_DETECTED_MODE):
++	case RT766_FUNC_STATUS_REG(MIC):
++	case RT766_PDE_ACTUAL_REG(MIC, PDE11):
++	case RT766_FUNC_STATUS_REG(HID):
++	case RT766_SDCA_CTL(HID, HID101, SDCA_CTL_HIDE_HIDTX_CURRENTOWNER) ...
++		RT766_SDCA_CTL(HID, HID101, SDCA_CTL_HIDE_HIDTX_MESSAGELENGTH):
++	case RT766_FUNC_STATUS_REG(AMP):
++	case RT766_PDE_ACTUAL_REG(AMP, PDE23):
++	case RT766_BUF_ADDR_HID1 ... RT766_BUF_ADDR_HID2:
++		return true;
++	default:
++		return false;
++	}
++}
++
++static int rt766_sdca_mbq_size(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case RT766_VOLUME_REG(UAJ, USER_FU41, 1):
++	case RT766_VOLUME_REG(UAJ, USER_FU41, 2):
++	case RT766_VOLUME_REG(UAJ, USER_FU36, 1):
++	case RT766_VOLUME_REG(UAJ, USER_FU36, 2):
++	case RT766_GAIN_REG(UAJ, PLATFORM_FU33, 1):
++	case RT766_GAIN_REG(UAJ, PLATFORM_FU33, 2):
++	case RT766_VOLUME_REG(MIC, USER_FU113, 1):
++	case RT766_VOLUME_REG(MIC, USER_FU113, 2):
++	case RT766_VOLUME_REG(MIC, USER_FU113, 3):
++	case RT766_VOLUME_REG(MIC, USER_FU113, 4):
++	case RT766_VOLUME_REG(AMP, USER_FU21, 1):
++	case RT766_VOLUME_REG(AMP, USER_FU21, 2):
++		return 2;
++	default:
++		return 1;
++	}
++}
++
++static const struct regmap_sdw_mbq_cfg rt766_sdca_mbq_cfg = {
++	.mbq_size = rt766_sdca_mbq_size,
++};
++
++static const struct regmap_config rt766_sdca_regmap = {
++	.reg_bits = 32,
++	.val_bits = 16,
++	.readable_reg = rt766_sdca_readable_register,
++	.volatile_reg = rt766_sdca_volatile_register,
++	.reg_defaults = rt766_sdca_defaults,
++	.num_reg_defaults = ARRAY_SIZE(rt766_sdca_defaults),
++	.max_register = SDW_SDCA_MAX_REGISTER,
++	.cache_type = REGCACHE_MAPLE,
++	.use_single_read = true,
++	.use_single_write = true,
++};
++
++static int rt766_sdca_update_status(struct sdw_slave *slave,
++				enum sdw_slave_status status)
++{
++	struct rt766_sdca_priv *rt766 = dev_get_drvdata(&slave->dev);
++
++	if (status == SDW_SLAVE_UNATTACHED)
++		rt766->hw_init = false;
++
++	if (status == SDW_SLAVE_ATTACHED) {
++		if (rt766->hs_jack) {
++			/*
++			 * Due to the SCP_SDCA_INTMASK will be cleared by any reset, and then
++			 * if the device attached again, we will need to set the setting back.
++			 * It could avoid losing the jack detection interrupt.
++			 * This also could sync with the cache value as the rt766_sdca_jack_init set.
++			 */
++			sdw_write_no_pm(rt766->slave, SDW_SCP_SDCA_INTMASK3,
++				SDW_SCP_SDCA_INTMASK_SDCA_16);
++			sdw_write_no_pm(rt766->slave, SDW_SCP_SDCA_INTMASK4,
++				SDW_SCP_SDCA_INTMASK_SDCA_24);
++		}
++	}
++
++	/*
++	 * Perform initialization only if slave status is present and
++	 * hw_init flag is false
++	 */
++	if (rt766->hw_init || status != SDW_SLAVE_ATTACHED)
++		return 0;
++
++	/* perform I/O transfers required for Slave initialization */
++	return rt766_sdca_io_init(&slave->dev, slave);
++}
++
++static int rt766_sdca_read_prop(struct sdw_slave *slave)
++{
++	struct sdw_slave_prop *prop = &slave->prop;
++	int ret;
++
++	ret = sdw_slave_read_prop(slave);
++	if (ret < 0)
++		return ret;
++
++	prop->scp_int1_mask = SDW_SCP_INT1_BUS_CLASH | SDW_SCP_INT1_PARITY;
++	prop->quirks = SDW_SLAVE_QUIRKS_INVALID_INITIAL_PARITY;
++	/*
++	 * SDCA interrupts are routed through SoundWire domain IRQ.
++	 */
++	prop->use_domain_irq = true;
++
++	return 0;
++}
++
++static const struct sdw_slave_ops rt766_sdca_slave_ops = {
++	.read_prop = rt766_sdca_read_prop,
++	.update_status = rt766_sdca_update_status,
++};
++
++static int rt766_sdca_sdw_probe(struct sdw_slave *slave,
++				const struct sdw_device_id *id)
++{
++	struct regmap *regmap;
++
++	/* Regmap Initialization */
++	regmap = devm_regmap_init_sdw_mbq_cfg(&slave->dev, slave,
++					      &rt766_sdca_regmap, &rt766_sdca_mbq_cfg);
++	if (IS_ERR(regmap))
++		return PTR_ERR(regmap);
++
++	return rt766_sdca_init(&slave->dev, regmap, slave);
++}
++
++static void rt766_sdca_sdw_remove(struct sdw_slave *slave)
++{
++	pm_runtime_disable(&slave->dev);
++}
++
++static const struct sdw_device_id rt766_sdca_id[] = {
++	SDW_SLAVE_ENTRY_EXT(0x025d, 0x766, 0x3, 0x1, 0),
++	SDW_SLAVE_ENTRY_EXT(0x025d, 0x767, 0x3, 0x1, 0),
++	SDW_SLAVE_ENTRY_EXT(0x025d, 0x766, 0x4, 0x1, 0),
++	SDW_SLAVE_ENTRY_EXT(0x025d, 0x767, 0x4, 0x1, 0),
++	{},
++};
++MODULE_DEVICE_TABLE(sdw, rt766_sdca_id);
++
++static int rt766_sdca_dev_suspend(struct device *dev)
++{
++	struct rt766_sdca_priv *rt766 = dev_get_drvdata(dev);
++
++	if (!rt766->hw_init)
++		return 0;
++
++	regcache_cache_only(rt766->regmap, true);
++	return 0;
++}
++
++static int rt766_sdca_dev_system_suspend(struct device *dev)
++{
++	struct rt766_sdca_priv *rt766 = dev_get_drvdata(dev);
++	struct sdw_slave *slave = dev_to_sdw_dev(dev);
++	int ret1, ret2;
++
++	if (!rt766->hw_init)
++		return 0;
++
++	/*
++	 * prevent new interrupts from being handled after the
++	 * deferred work completes and before the parent disables
++	 * interrupts on the link
++	 */
++	mutex_lock(&rt766->disable_irq_lock);
++	rt766->disable_irq = true;
++	ret1 = sdw_update_no_pm(slave, SDW_SCP_SDCA_INTMASK3,
++				SDW_SCP_SDCA_INTMASK_SDCA_16, 0);
++	ret2 = sdw_update_no_pm(slave, SDW_SCP_SDCA_INTMASK4,
++				SDW_SCP_SDCA_INTMASK_SDCA_24, 0);
++	mutex_unlock(&rt766->disable_irq_lock);
++
++	if (ret1 < 0 || ret2 < 0) {
++		/* log but don't prevent suspend from happening */
++		dev_dbg(&slave->dev, "%s: could not disable SDCA interrupts\n:", __func__);
++	}
++
++	return rt766_sdca_dev_suspend(dev);
++}
++
++static int rt766_sdca_dev_resume(struct device *dev)
++{
++	struct sdw_slave *slave = dev_to_sdw_dev(dev);
++	struct rt766_sdca_priv *rt766 = dev_get_drvdata(dev);
++	int ret;
++
++	if (!rt766->first_hw_init)
++		return 0;
++
++	if (!slave->unattach_request) {
++		mutex_lock(&rt766->disable_irq_lock);
++		if (rt766->disable_irq == true) {
++			sdw_write_no_pm(slave, SDW_SCP_SDCA_INTMASK3, SDW_SCP_SDCA_INTMASK_SDCA_16);
++			sdw_write_no_pm(slave, SDW_SCP_SDCA_INTMASK4, SDW_SCP_SDCA_INTMASK_SDCA_24);
++			rt766->disable_irq = false;
++		}
++		mutex_unlock(&rt766->disable_irq_lock);
++		goto regmap_sync;
++	}
++
++	ret = sdw_slave_wait_for_init(slave, RT766_PROBE_TIMEOUT);
++	if (ret) {
++		sdw_show_ping_status(slave->bus, true);
++		return ret;
++	}
++
++regmap_sync:
++	regcache_cache_only(rt766->regmap, false);
++	ret = regcache_sync(rt766->regmap);
++	if (ret) {
++		regcache_cache_only(rt766->regmap, true);
++		regcache_mark_dirty(rt766->regmap);
++		return ret;
++	}
++
++	return 0;
++}
++
++static const struct dev_pm_ops rt766_sdca_pm = {
++	SYSTEM_SLEEP_PM_OPS(rt766_sdca_dev_system_suspend, rt766_sdca_dev_resume)
++	RUNTIME_PM_OPS(rt766_sdca_dev_suspend, rt766_sdca_dev_resume, NULL)
++};
++
++static struct sdw_driver rt766_sdca_sdw_driver = {
++	.driver = {
++		.name = "rt766-sdca",
++		.pm = pm_ptr(&rt766_sdca_pm),
++	},
++	.probe = rt766_sdca_sdw_probe,
++	.remove = rt766_sdca_sdw_remove,
++	.ops = &rt766_sdca_slave_ops,
++	.id_table = rt766_sdca_id,
++};
++module_sdw_driver(rt766_sdca_sdw_driver);
++
++MODULE_DESCRIPTION("ASoC RT766 SDCA SDW driver");
++MODULE_AUTHOR("Shuming Fan <shumingf@realtek.com>");
++MODULE_LICENSE("GPL");
++MODULE_IMPORT_NS("SND_SOC_SDCA");
+diff --git a/sound/soc/codecs/rt766-sdca-sdw.h b/sound/soc/codecs/rt766-sdca-sdw.h
+new file mode 100644
+index 0000000..3e923a1
+--- /dev/null
++++ b/sound/soc/codecs/rt766-sdca-sdw.h
+@@ -0,0 +1,61 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * rt766-sdca-sdw.h -- RT766 SDCA ALSA SoC audio driver header
++ *
++ * Copyright(c) 2026 Realtek Semiconductor Corp.
++ */
++
++#ifndef __RT766_SDW_H__
++#define __RT766_SDW_H__
++
++#include <linux/regmap.h>
++#include <linux/soundwire/sdw_registers.h>
++
++static const struct reg_default rt766_sdca_defaults[] = {
++	/* 0x40400289 - 0x4040028a */
++	{ RT766_MUTE_REG(UAJ, USER_FU41, 1), 0x01 },
++	{ RT766_MUTE_REG(UAJ, USER_FU41, 2), 0x01 },
++	/* 0x40400291 - 0x40400292 */
++	{ RT766_VOLUME_REG(UAJ, USER_FU41, 1), 0x0000 },
++	{ RT766_VOLUME_REG(UAJ, USER_FU41, 2), 0x0000 },
++	/* 0x40400789 - 0x4040078a */
++	{ RT766_MUTE_REG(UAJ, USER_FU36, 1), 0x01 },
++	{ RT766_MUTE_REG(UAJ, USER_FU36, 2), 0x01 },
++	/* 0x40400791 - 0x40400792 */
++	{ RT766_VOLUME_REG(UAJ, USER_FU36, 1), 0x0000 },
++	{ RT766_VOLUME_REG(UAJ, USER_FU36, 2), 0x0000 },
++	{ RT766_PDE_REQ_REG(UAJ, PDE47), 0x03 }, /* 0x40401408 */
++	{ RT766_PDE_REQ_REG(UAJ, PDE34), 0x03 }, /* 0x40401488 */
++	{ RT766_SDCA_CTL(UAJ, CS41, SDCA_CTL_CS_SAMPLERATEINDEX), 0x09 }, /* 0x40480080 */
++	{ RT766_SDCA_CTL(UAJ, CS36, SDCA_CTL_CS_SAMPLERATEINDEX), 0x09 }, /* 0x40480880 */
++	/* 0x40600259 - 0x4060025a */
++	{ RT766_GAIN_REG(UAJ, PLATFORM_FU33, 1), 0xfe00 },
++	{ RT766_GAIN_REG(UAJ, PLATFORM_FU33, 2), 0xfe00 },
++	{ RT766_SDCA_CTL(UAJ, GE49, SDCA_CTL_GE_SELECTED_MODE), 0x00 }, /* 0x40600488 */
++
++	{ RT766_PDE_REQ_REG(MIC, PDE11), 0x03 }, /* 0x40801508 */
++	/* 0x40801809 - 0x4080180c */
++	{ RT766_MUTE_REG(MIC, USER_FU113, 1), 0x01 },
++	{ RT766_MUTE_REG(MIC, USER_FU113, 2), 0x01 },
++	{ RT766_MUTE_REG(MIC, USER_FU113, 3), 0x01 },
++	{ RT766_MUTE_REG(MIC, USER_FU113, 4), 0x01 },
++	/* 0x40801811 - 0x40801814 */
++	{ RT766_VOLUME_REG(MIC, USER_FU113, 1), 0x0000 },
++	{ RT766_VOLUME_REG(MIC, USER_FU113, 2), 0x0000 },
++	{ RT766_VOLUME_REG(MIC, USER_FU113, 3), 0x0000 },
++	{ RT766_VOLUME_REG(MIC, USER_FU113, 4), 0x0000 },
++	{ RT766_SDCA_CTL(MIC, CS113, SDCA_CTL_CS_SAMPLERATEINDEX), 0x09 }, /* 0x40880900 */
++
++	/* 0x41000189 - 0x4100018a */
++	{ RT766_MUTE_REG(AMP, USER_FU21, 1), 0x01 },
++	{ RT766_MUTE_REG(AMP, USER_FU21, 2), 0x01 },
++	/* 0x41000191 - 0x41000192 */
++	{ RT766_VOLUME_REG(AMP, USER_FU21, 1), 0x0000 },
++	{ RT766_VOLUME_REG(AMP, USER_FU21, 2), 0x0000 },
++	{ RT766_PDE_REQ_REG(AMP, PDE23), 0x03 }, /* 0x41001988 */
++	{ RT766_SDCA_CTL(AMP, PPU21, SDCA_CTL_PPU_POSTURENUMBER), 0x00 }, /* 0x41080200 */
++	{ RT766_SDCA_CTL(AMP, CS21, SDCA_CTL_CS_SAMPLERATEINDEX), 0x09 }, /* 0x41081080 */
++
++};
++
++#endif /* __RT766_SDW_H__ */
+diff --git a/sound/soc/codecs/rt766-sdca.c b/sound/soc/codecs/rt766-sdca.c
+new file mode 100644
+index 0000000..64d763b
+--- /dev/null
++++ b/sound/soc/codecs/rt766-sdca.c
+@@ -0,0 +1,1378 @@
++// SPDX-License-Identifier: GPL-2.0-only
++//
++// rt766-sdca.c -- rt766 SDCA ALSA SoC audio driver
++//
++// Copyright(c) 2026 Realtek Semiconductor Corp.
++//
++//
++
++#include <linux/bitops.h>
++#include <sound/core.h>
++#include <linux/delay.h>
++#include <linux/init.h>
++#include <sound/initval.h>
++#include <sound/jack.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/pm_runtime.h>
++#include <linux/soundwire/sdw_registers.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/sdw.h>
++#include <sound/sdca.h>
++#include <sound/sdca_asoc.h>
++#include <sound/sdca_function.h>
++#include <sound/sdca_hid.h>
++#include <sound/sdca_regmap.h>
++#include <sound/sdca_interrupts.h>
++#include <linux/slab.h>
++#include <sound/soc-dapm.h>
++#include <sound/tlv.h>
++#include "rt766-sdca.h"
++#include "rt-sdw-common.h"
++
++static int rt766_sdca_btn_detect(struct sdca_interrupt *interrupt)
++{
++	struct rt766_sdca_priv *rt766 = interrupt->priv;
++	unsigned char *buf = NULL;
++	unsigned int offset, owner, length;
++	unsigned int det_mode, idx, val;
++	int ret;
++
++	ret = regmap_read(rt766->regmap,
++		RT766_SDCA_CTL(UAJ, GE49, SDCA_CTL_GE_DETECTED_MODE),
++		&det_mode);
++	if (ret < 0)
++		goto io_error;
++
++	/* get current UMP message owner */
++	ret = regmap_read(rt766->regmap,
++		RT766_SDCA_CTL(HID, HID101, SDCA_CTL_HIDE_HIDTX_CURRENTOWNER),
++		&owner);
++	if (ret < 0)
++		goto io_error;
++
++	/* if owner is device then there is no button event from device */
++	if (owner == 1)
++		return 0;
++
++	if (det_mode) {
++		/* read UMP message length */
++		ret = regmap_read(rt766->regmap,
++			RT766_SDCA_CTL(HID, HID101, SDCA_CTL_HIDE_HIDTX_MESSAGELENGTH),
++			&length);
++		if (ret < 0)
++			goto _end_btn_det_;
++
++		/* read UMP message offset */
++		ret = regmap_read(rt766->regmap,
++			RT766_SDCA_CTL(HID, HID101, SDCA_CTL_HIDE_HIDTX_MESSAGEOFFSET),
++			&offset);
++		if (ret < 0)
++			goto _end_btn_det_;
++
++		buf = devm_kzalloc(&rt766->slave->dev, length, GFP_KERNEL);
++		if (!buf) {
++			dev_err(&rt766->slave->dev, "%s: alloc buf failed\n", __func__);
++			goto _end_btn_det_;
++		}
++
++		for (idx = 0; idx < length; idx++) {
++			ret = regmap_read(rt766->regmap,
++				RT766_BUF_ADDR_HID1 + offset + idx, &val);
++			if (ret < 0)
++				goto _end_btn_det_;
++			buf[idx] = val & 0xff;
++		}
++
++		if (rt766->hid)
++			hid_input_report(rt766->hid, HID_INPUT_REPORT,
++				buf, length, 1);
++	}
++
++_end_btn_det_:
++	if (buf)
++		devm_kfree(&rt766->slave->dev, buf);
++
++	/* Host is owner, so set back to device */
++	if (owner == 0) {
++		regmap_write(rt766->regmap,
++			RT766_SDCA_CTL(HID, HID101, SDCA_CTL_HIDE_HIDTX_CURRENTOWNER), 0x01);
++	}
++
++	return 0;
++
++io_error:
++	pr_err_ratelimited("IO error in %s, ret %d\n", __func__, ret);
++	return ret;
++}
++
++static irqreturn_t rt766_sdca_irq_btn_handler(int irq, void *data)
++{
++	struct sdca_interrupt *interrupt = data;
++	struct rt766_sdca_priv *rt766 = interrupt->priv;
++
++	if (!rt766->hs_jack)
++		return IRQ_HANDLED;
++
++	if (!rt766->component->card || !rt766->component->card->instantiated)
++		return IRQ_HANDLED;
++
++	mutex_lock(&rt766->disable_irq_lock);
++	if (!rt766->disable_irq)
++		rt766_sdca_btn_detect(interrupt);
++	mutex_unlock(&rt766->disable_irq_lock);
++	return IRQ_HANDLED;
++}
++
++static int rt766_sdca_headset_detect(struct rt766_sdca_priv *rt766)
++{
++	unsigned int det_mode;
++	int ret;
++
++	/* get detected_mode */
++	ret = regmap_read(rt766->regmap,
++		RT766_SDCA_CTL(UAJ, GE49, SDCA_CTL_GE_DETECTED_MODE),
++		&det_mode);
++	if (ret < 0)
++		goto io_error;
++
++	switch (det_mode) {
++	case 0x00:
++		rt766->jack_type = 0;
++		break;
++	case 0x03:
++		rt766->jack_type = SND_JACK_HEADPHONE;
++		break;
++	case 0x05:
++		rt766->jack_type = SND_JACK_HEADSET;
++		break;
++	}
++
++	/* write selected_mode */
++	if (det_mode) {
++		ret = regmap_write(rt766->regmap,
++			RT766_SDCA_CTL(UAJ, GE49, SDCA_CTL_GE_SELECTED_MODE),
++			det_mode);
++		if (ret < 0)
++			goto io_error;
++	}
++
++	dev_dbg(&rt766->slave->dev,
++		"%s, detected_mode=0x%x\n", __func__, det_mode);
++
++	return 0;
++
++io_error:
++	pr_err_ratelimited("IO error in %s, ret %d\n", __func__, ret);
++	return ret;
++}
++
++static irqreturn_t rt766_sdca_irq_jd_handler(int irq, void *data)
++{
++	struct sdca_interrupt *interrupt = data;
++	struct rt766_sdca_priv *rt766 = interrupt->priv;
++
++	if (!rt766->hs_jack)
++		return IRQ_HANDLED;
++
++	if (!rt766->component->card || !rt766->component->card->instantiated)
++		return IRQ_HANDLED;
++
++	mutex_lock(&rt766->disable_irq_lock);
++	if (!rt766->disable_irq)
++		rt766_sdca_headset_detect(rt766);
++	mutex_unlock(&rt766->disable_irq_lock);
++
++	dev_dbg(&rt766->slave->dev,
++		"in %s, jack_type=%d\n", __func__, rt766->jack_type);
++
++	snd_soc_jack_report(rt766->hs_jack, rt766->jack_type, SND_JACK_HEADSET);
++	return IRQ_HANDLED;
++}
++
++static void rt766_sdca_destroy_hid_device(struct sdca_interrupt *interrupt)
++{
++	struct rt766_sdca_priv *rt766 = interrupt->priv;
++
++	hid_destroy_device(rt766->hid);
++}
++
++static int rt766_sdca_irq_ctl(struct rt766_sdca_priv *rt766,
++							  struct sdca_function_data *function,
++							  struct snd_soc_component *component,
++							  struct sdca_interrupt_info *info,
++							  bool enabled)
++{
++	struct device *dev = &rt766->slave->dev;
++	struct sdca_interrupt *interrupt;
++	struct sdca_control *control;
++	struct sdca_entity *entity;
++	irq_handler_t handler;
++	int i, j, irq, ret;
++
++	for (i = 0; i < function->num_entities; i++) {
++		entity = &function->entities[i];
++
++		for (j = 0; j < entity->num_controls; j++) {
++			control = &entity->controls[j];
++			irq = control->interrupt_position;
++
++			switch (SDCA_CTL_TYPE(entity->type, control->sel)) {
++			case SDCA_CTL_TYPE_S(GE, DETECTED_MODE):
++				handler = rt766_sdca_irq_jd_handler;
++				break;
++			case SDCA_CTL_TYPE_S(HIDE, HIDTX_CURRENTOWNER):
++				handler = rt766_sdca_irq_btn_handler;
++				break;
++			default:
++				continue;
++			}
++
++			interrupt = &info->irqs[irq];
++
++			if (enabled) {
++				ret = sdca_irq_data_populate(dev, rt766->regmap, component,
++								function, entity, control,
++								interrupt);
++				if (ret)
++					return ret;
++
++				if (handler == rt766_sdca_irq_btn_handler) {
++					ret = sdca_add_hid_device(interrupt);
++					if (ret)
++						return ret;
++
++					interrupt->free_priv = rt766_sdca_destroy_hid_device;
++					rt766->hid = interrupt->priv;
++				}
++
++				interrupt->priv = rt766;
++				ret = sdca_irq_request(dev, info, irq, interrupt->name,
++								handler, interrupt);
++				if (ret) {
++					dev_err(dev, "failed to request irq %s: %d\n",
++						interrupt->name, ret);
++					sdca_irq_cleanup_late(dev, function, info);
++					return ret;
++				}
++				dev_dbg(dev, "Requesting IRQ %d InterruptName=%s\n", irq, interrupt->name);
++			} else {
++				sdca_irq_cleanup_late(dev, function, info);
++				dev_dbg(dev, "Freeing IRQ %d\n", irq);
++			}
++		}
++	}
++
++	return 0;
++}
++
++static int rt766_sdca_set_jack_detect(struct snd_soc_component *component,
++	struct snd_soc_jack *hs_jack, void *data)
++{
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++	int ret;
++
++	if (!rt766->uaj_func_data) {
++		dev_err(&rt766->slave->dev, "The SDCA UAJ function is not supported.\n");
++		return -EINVAL;
++	}
++
++	rt766->hs_jack = hs_jack;
++
++	if (!rt766->first_hw_init)
++		return 0;
++
++	ret = pm_runtime_resume_and_get(component->dev);
++	if (ret < 0) {
++		if (ret != -EACCES) {
++			dev_err(component->dev, "%s: failed to resume %d\n", __func__, ret);
++			return ret;
++		}
++
++		/* pm_runtime not enabled yet */
++		dev_dbg(component->dev,	"%s: skipping jack init for now\n", __func__);
++		return 0;
++	}
++
++	/* disable interrupts if hs_jack is not set */
++	if (!rt766->hs_jack) {
++		if (rt766->uaj_func_data)
++			rt766_sdca_irq_ctl(rt766, rt766->uaj_func_data,
++				rt766->component, rt766->irq_info, false);
++
++		if (rt766->hid_func_data)
++			rt766_sdca_irq_ctl(rt766, rt766->hid_func_data,
++				rt766->component, rt766->irq_info, false);
++	}
++
++	pm_runtime_put_autosuspend(component->dev);
++
++	return 0;
++}
++
++static int rt766_sdca_set_fu_ctl(struct rt766_sdca_priv *rt766, int func_num, int fu_num)
++{
++	unsigned int fu01_reg, fu02_reg;
++	unsigned int ch_01, ch_02;
++	unsigned int ch_mute;
++	unsigned int fu_reg;
++	int err, i;
++
++	switch (fu_num) {
++	case RT766_SDCA_ENT_USER_FU41:
++		ch_01 = (rt766->fu41_dapm_mute || rt766->fu41_mixer_l_mute) ? 0x01 : 0x00;
++		ch_02 = (rt766->fu41_dapm_mute || rt766->fu41_mixer_r_mute) ? 0x01 : 0x00;
++		break;
++	case RT766_SDCA_ENT_USER_FU36:
++		ch_01 = (rt766->fu36_dapm_mute || rt766->fu36_mixer_l_mute) ? 0x01 : 0x00;
++		ch_02 = (rt766->fu36_dapm_mute || rt766->fu36_mixer_r_mute) ? 0x01 : 0x00;
++		break;
++	case RT766_SDCA_ENT_USER_FU21:
++		ch_01 = (rt766->fu21_dapm_mute || rt766->fu21_mixer_l_mute) ? 0x01 : 0x00;
++		ch_02 = (rt766->fu21_dapm_mute || rt766->fu21_mixer_r_mute) ? 0x01 : 0x00;
++		break;
++	case RT766_SDCA_ENT_USER_FU113:
++		for (i = 0; i < ARRAY_SIZE(rt766->fu113_mixer_mute); i++) {
++			ch_mute = (rt766->fu113_dapm_mute || rt766->fu113_mixer_mute[i]) ? 0x01 : 0x00;
++			fu_reg = SDW_SDCA_CTL(func_num, fu_num, SDCA_CTL_FU_MUTE, 1) + i;
++			err = regmap_write(rt766->regmap, fu_reg, ch_mute);
++			if (err < 0)
++				return err;
++		}
++		return 0;
++	}
++
++	fu01_reg = SDW_SDCA_CTL(func_num, fu_num, SDCA_CTL_FU_MUTE, 1);
++	fu02_reg = SDW_SDCA_CTL(func_num, fu_num, SDCA_CTL_FU_MUTE, 2);
++	err = regmap_write(rt766->regmap, fu01_reg, ch_01);
++	if (err < 0)
++		return err;
++	err = regmap_write(rt766->regmap, fu02_reg, ch_02);
++	if (err < 0)
++		return err;
++
++	return 0;
++}
++
++static int rt766_sdca_fu41_playback_get(struct snd_kcontrol *kcontrol,
++	struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++
++	ucontrol->value.integer.value[0] = !rt766->fu41_mixer_l_mute;
++	ucontrol->value.integer.value[1] = !rt766->fu41_mixer_r_mute;
++	return 0;
++}
++
++static int rt766_sdca_fu41_playback_put(struct snd_kcontrol *kcontrol,
++	struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++	int err;
++
++	if (rt766->fu41_mixer_l_mute == !ucontrol->value.integer.value[0] &&
++		rt766->fu41_mixer_r_mute == !ucontrol->value.integer.value[1])
++		return 0;
++
++	rt766->fu41_mixer_l_mute = !ucontrol->value.integer.value[0];
++	rt766->fu41_mixer_r_mute = !ucontrol->value.integer.value[1];
++
++	err = rt766_sdca_set_fu_ctl(rt766, RT766_FUNC_NUM_UAJ, RT766_SDCA_ENT_USER_FU41);
++	if (err < 0)
++		return err;
++
++	return 1;
++}
++
++static int rt766_sdca_fu36_capture_get(struct snd_kcontrol *kcontrol,
++			struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++
++	ucontrol->value.integer.value[0] = !rt766->fu36_mixer_l_mute;
++	ucontrol->value.integer.value[1] = !rt766->fu36_mixer_r_mute;
++	return 0;
++}
++
++static int rt766_sdca_fu36_capture_put(struct snd_kcontrol *kcontrol,
++			struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++	int err;
++
++	if (rt766->fu36_mixer_l_mute == !ucontrol->value.integer.value[0] &&
++		rt766->fu36_mixer_r_mute == !ucontrol->value.integer.value[1])
++		return 0;
++
++	rt766->fu36_mixer_l_mute = !ucontrol->value.integer.value[0];
++	rt766->fu36_mixer_r_mute = !ucontrol->value.integer.value[1];
++	err = rt766_sdca_set_fu_ctl(rt766, RT766_FUNC_NUM_UAJ, RT766_SDCA_ENT_USER_FU36);
++	if (err < 0)
++		return err;
++
++	return 1;
++}
++
++static int rt766_sdca_fu21_playback_get(struct snd_kcontrol *kcontrol,
++	struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++
++	ucontrol->value.integer.value[0] = !rt766->fu21_mixer_l_mute;
++	ucontrol->value.integer.value[1] = !rt766->fu21_mixer_r_mute;
++	return 0;
++}
++
++static int rt766_sdca_fu21_playback_put(struct snd_kcontrol *kcontrol,
++	struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++	int err;
++
++	if (rt766->fu21_mixer_l_mute == !ucontrol->value.integer.value[0] &&
++		rt766->fu21_mixer_r_mute == !ucontrol->value.integer.value[1])
++		return 0;
++
++	rt766->fu21_mixer_l_mute = !ucontrol->value.integer.value[0];
++	rt766->fu21_mixer_r_mute = !ucontrol->value.integer.value[1];
++
++	err = rt766_sdca_set_fu_ctl(rt766, RT766_FUNC_NUM_AMP, RT766_SDCA_ENT_USER_FU21);
++	if (err < 0)
++		return err;
++
++	return 1;
++}
++
++static int rt766_sdca_fu113_event(struct snd_soc_dapm_widget *w,
++	struct snd_kcontrol *kcontrol, int event)
++{
++	struct snd_soc_component *component =
++		snd_soc_dapm_to_component(w->dapm);
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++
++	switch (event) {
++	case SND_SOC_DAPM_POST_PMU:
++		rt766->fu113_dapm_mute = false;
++		rt766_sdca_set_fu_ctl(rt766, RT766_FUNC_NUM_MIC, RT766_SDCA_ENT_USER_FU113);
++		break;
++	case SND_SOC_DAPM_PRE_PMD:
++		rt766->fu113_dapm_mute = true;
++		rt766_sdca_set_fu_ctl(rt766, RT766_FUNC_NUM_MIC, RT766_SDCA_ENT_USER_FU113);
++		break;
++	}
++	return 0;
++}
++
++static int rt766_sdca_dmic_set_gain_get(struct snd_kcontrol *kcontrol,
++		struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++	struct rt_sdca_dmic_kctrl_priv *p =
++		(struct rt_sdca_dmic_kctrl_priv *)kcontrol->private_value;
++	const unsigned int interval_offset = 0xc0;
++	unsigned int regvalue, ctl, i;
++
++	/* check all channels */
++	for (i = 0; i < p->count; i++) {
++		regmap_read(rt766->regmap, p->reg_base + i, &regvalue);
++		ctl = p->max - (((0x1e00 - regvalue) & 0xffff) / interval_offset);
++
++		ucontrol->value.integer.value[i] = ctl;
++	}
++
++	return 0;
++}
++
++static int rt766_sdca_dmic_set_gain_put(struct snd_kcontrol *kcontrol,
++		struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct rt_sdca_dmic_kctrl_priv *p =
++		(struct rt_sdca_dmic_kctrl_priv *)kcontrol->private_value;
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++	const unsigned int interval_offset = 0xc0;
++	unsigned int gain_val[4];
++	unsigned int i, changed = 0;
++	unsigned int regvalue[4];
++	int err;
++
++	/* check all channels */
++	for (i = 0; i < p->count; i++) {
++		regmap_read(rt766->regmap, p->reg_base + i, &regvalue[i]);
++
++		gain_val[i] = ucontrol->value.integer.value[i];
++		if (gain_val[i] > p->max)
++			gain_val[i] = p->max;
++
++		gain_val[i] = 0x1e00 - ((p->max - gain_val[i]) * interval_offset);
++		gain_val[i] &= 0xffff;
++
++		if (regvalue[i] != gain_val[i])
++			changed = 1;
++	}
++
++	if (!changed)
++		return 0;
++
++	for (i = 0; i < p->count; i++) {
++		err = regmap_write(rt766->regmap, p->reg_base + i, gain_val[i]);
++		if (err < 0)
++			dev_err(&rt766->slave->dev, "0x%08x can't be set\n", p->reg_base + i);
++	}
++
++	return changed;
++}
++
++static int rt766_sdca_dmic_fu113_capture_get(struct snd_kcontrol *kcontrol,
++			struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++	unsigned int i;
++
++	for (i = 0; i < 4; i++)
++		ucontrol->value.integer.value[i] = !rt766->fu113_mixer_mute[i];
++	return 0;
++}
++
++static int rt766_sdca_dmic_fu113_capture_put(struct snd_kcontrol *kcontrol,
++			struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++	int err, changed = 0, i;
++
++	for (i = 0; i < 4; i++) {
++		if (rt766->fu113_mixer_mute[i] != !ucontrol->value.integer.value[i])
++			changed = 1;
++		rt766->fu113_mixer_mute[i] = !ucontrol->value.integer.value[i];
++	}
++
++	err = rt766_sdca_set_fu_ctl(rt766, RT766_FUNC_NUM_MIC, RT766_SDCA_ENT_USER_FU113);
++	if (err < 0)
++		return err;
++	return changed;
++}
++
++static int rt766_sdca_fu41_event(struct snd_soc_dapm_widget *w,
++	struct snd_kcontrol *kcontrol, int event)
++{
++	struct snd_soc_component *component =
++		snd_soc_dapm_to_component(w->dapm);
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++
++	switch (event) {
++	case SND_SOC_DAPM_POST_PMU:
++		rt766->fu41_dapm_mute = false;
++		rt766_sdca_set_fu_ctl(rt766, RT766_FUNC_NUM_UAJ, RT766_SDCA_ENT_USER_FU41);
++		break;
++	case SND_SOC_DAPM_PRE_PMD:
++		rt766->fu41_dapm_mute = true;
++		rt766_sdca_set_fu_ctl(rt766, RT766_FUNC_NUM_UAJ, RT766_SDCA_ENT_USER_FU41);
++		break;
++	}
++	return 0;
++}
++
++static int rt766_sdca_pde_event(struct snd_soc_dapm_widget *w,
++	struct snd_kcontrol *kcontrol, int event, int func_num, int pde_num, const char *pde_ent)
++{
++	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++	struct sdca_function_data *func_data;
++	unsigned char ps0 = 0x0, ps3 = 0x3;
++	const struct sdca_entity *entity;
++	unsigned int pde_req_reg;
++	int from_ps, to_ps;
++	int ret;
++
++	pde_req_reg = SDW_SDCA_CTL(func_num, pde_num, SDCA_CTL_PDE_REQUESTED_PS, 0);
++
++	switch (func_num) {
++	case RT766_FUNC_NUM_UAJ:
++		func_data = rt766->uaj_func_data;
++		break;
++	case RT766_FUNC_NUM_AMP:
++		func_data = rt766->sa_func_data;
++		break;
++	case RT766_FUNC_NUM_MIC:
++		func_data = rt766->sm_func_data;
++		break;
++	default:
++		dev_err(component->dev, "%s: unsupported func_num %d\n",
++			__func__, func_num);
++		return -EINVAL;
++	}
++
++	switch (event) {
++	case SND_SOC_DAPM_POST_PMU:
++		regmap_write(rt766->regmap, pde_req_reg, ps0);
++		from_ps = ps3;
++		to_ps = ps0;
++		break;
++	case SND_SOC_DAPM_PRE_PMD:
++		regmap_write(rt766->regmap, pde_req_reg, ps3);
++		from_ps = ps0;
++		to_ps = ps3;
++		break;
++	}
++
++	entity = sdca_find_entity_by_label(func_data, pde_ent);
++	if (!entity) {
++		dev_err(component->dev, "%s: failed to find entity %s\n",
++			__func__, pde_ent);
++		return -EINVAL;
++	}
++
++	ret = sdca_asoc_pde_poll_actual_ps(rt766->regmap,
++				   func_num,
++				   pde_num,
++				   from_ps, to_ps,
++				   entity->pde.max_delay,
++				   entity->pde.num_max_delay);
++	if (ret)
++		dev_err(component->dev, "%s: PDE transition %x -> %x failed, err=%d\n",
++			__func__, from_ps, to_ps, ret);
++
++	return ret;
++}
++
++static int rt766_sdca_pde47_event(struct snd_soc_dapm_widget *w,
++	struct snd_kcontrol *kcontrol, int event)
++{
++	return rt766_sdca_pde_event(w, kcontrol, event,
++		RT766_FUNC_NUM_UAJ, RT766_SDCA_ENT_PDE47, "PDE 47");
++}
++
++static int rt766_sdca_fu36_event(struct snd_soc_dapm_widget *w,
++	struct snd_kcontrol *kcontrol, int event)
++{
++	struct snd_soc_component *component =
++		snd_soc_dapm_to_component(w->dapm);
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++
++	switch (event) {
++	case SND_SOC_DAPM_POST_PMU:
++		rt766->fu36_dapm_mute = false;
++		rt766_sdca_set_fu_ctl(rt766, RT766_FUNC_NUM_UAJ, RT766_SDCA_ENT_USER_FU36);
++		break;
++	case SND_SOC_DAPM_PRE_PMD:
++		rt766->fu36_dapm_mute = true;
++		rt766_sdca_set_fu_ctl(rt766, RT766_FUNC_NUM_UAJ, RT766_SDCA_ENT_USER_FU36);
++		break;
++	}
++	return 0;
++}
++
++static int rt766_sdca_pde34_event(struct snd_soc_dapm_widget *w,
++	struct snd_kcontrol *kcontrol, int event)
++{
++	return rt766_sdca_pde_event(w, kcontrol, event,
++		RT766_FUNC_NUM_UAJ, RT766_SDCA_ENT_PDE34, "PDE 34");
++}
++
++static int rt766_sdca_fu21_event(struct snd_soc_dapm_widget *w,
++	struct snd_kcontrol *kcontrol, int event)
++{
++	struct snd_soc_component *component =
++		snd_soc_dapm_to_component(w->dapm);
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++
++	switch (event) {
++	case SND_SOC_DAPM_POST_PMU:
++		rt766->fu21_dapm_mute = false;
++		rt766_sdca_set_fu_ctl(rt766, RT766_FUNC_NUM_AMP, RT766_SDCA_ENT_USER_FU21);
++		break;
++	case SND_SOC_DAPM_PRE_PMD:
++		rt766->fu21_dapm_mute = true;
++		rt766_sdca_set_fu_ctl(rt766, RT766_FUNC_NUM_AMP, RT766_SDCA_ENT_USER_FU21);
++		break;
++	}
++	return 0;
++}
++
++static int rt766_sdca_pde23_event(struct snd_soc_dapm_widget *w,
++	struct snd_kcontrol *kcontrol, int event)
++{
++	return rt766_sdca_pde_event(w, kcontrol, event,
++		RT766_FUNC_NUM_AMP, RT766_SDCA_ENT_PDE23, "PDE 23");
++}
++
++static int rt766_sdca_pde11_event(struct snd_soc_dapm_widget *w,
++	struct snd_kcontrol *kcontrol, int event)
++{
++	return rt766_sdca_pde_event(w, kcontrol, event,
++		RT766_FUNC_NUM_MIC, RT766_SDCA_ENT_PDE11, "PDE 11");
++}
++
++static int rt766_dmic_fu_info(struct snd_kcontrol *kcontrol,
++	struct snd_ctl_elem_info *uinfo)
++{
++	struct rt_sdca_dmic_kctrl_priv *p =
++		(struct rt_sdca_dmic_kctrl_priv *)kcontrol->private_value;
++
++	if (p->max == 1)
++		uinfo->type = SNDRV_CTL_ELEM_TYPE_BOOLEAN;
++	else
++		uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
++	uinfo->count = p->count;
++	uinfo->value.integer.min = 0;
++	uinfo->value.integer.max = p->max;
++	return 0;
++}
++
++static const char * const rt766_rx_data_ch_select[] = {
++	"L,R",
++	"R,L",
++	"L,L",
++	"R,R",
++	"L,L+R",
++	"R,L+R",
++	"L+R,L",
++	"L+R,R",
++	"L+R,L+R",
++};
++
++static SOC_ENUM_SINGLE_DECL(rt766_rx_data_ch_enum,
++	RT766_SDCA_CTL(AMP, PPU21, SDCA_CTL_PPU_POSTURENUMBER), 0,
++	rt766_rx_data_ch_select);
++
++static const DECLARE_TLV_DB_SCALE(hp_vol_tlv, -9525, 75, 0);
++static const DECLARE_TLV_DB_SCALE(spk_vol_tlv, -6525, 75, 0);
++static const DECLARE_TLV_DB_SCALE(mic_vol_tlv, -1725, 75, 0);
++static const DECLARE_TLV_DB_SCALE(boost_vol_tlv, -200, 200, 0);
++
++#define RT766_P75DB_STEP		0xC0	/* 0.75 dB in Q7.8 format */
++#define RT766_2DB_STEP			0x200	/* 2 dB in Q7.8 format */
++#define RT766_HP_VOL_MIN		(-127)	/* -95.25 dB / 0.75 dB step */
++#define RT766_HS_VOL_MIN		(-23)	/* -17.25 dB / 0.75 dB step */
++#define RT766_HS_BOOST_VOL_MIN		(-1)	/* -2 dB / 2 dB step */
++#define RT766_SPK_VOL_MIN		(-87)	/* -65.25 dB / 0.75 dB step */
++#define RT766_P_VOL_MAX			0	/* 0 dB / 0.75 dB step */
++#define RT766_HS_VOL_MAX		40	/* 30 dB / 0.75 dB step */
++#define RT766_HS_BOOST_VOL_MAX		20	/* 40 dB / 2 dB step */
++
++static const struct snd_kcontrol_new rt766_sdca_controls[] = {
++	SOC_DOUBLE_EXT("FU41 Playback Switch", SND_SOC_NOPM, 0, 1, 1, 0,
++		rt766_sdca_fu41_playback_get, rt766_sdca_fu41_playback_put),
++	SDCA_DOUBLE_Q78_TLV("FU41 Playback Volume",
++		RT766_VOLUME_REG(UAJ, USER_FU41, 1),
++		RT766_VOLUME_REG(UAJ, USER_FU41, 2),
++		RT766_HP_VOL_MIN, RT766_P_VOL_MAX, RT766_P75DB_STEP, hp_vol_tlv),
++	SOC_DOUBLE_EXT("FU36 Capture Switch", SND_SOC_NOPM, 0, 1, 1, 0,
++		rt766_sdca_fu36_capture_get, rt766_sdca_fu36_capture_put),
++	SDCA_DOUBLE_Q78_TLV("FU36 Capture Volume",
++		RT766_VOLUME_REG(UAJ, USER_FU36, 1),
++		RT766_VOLUME_REG(UAJ, USER_FU36, 2),
++		RT766_HS_VOL_MIN, RT766_HS_VOL_MAX, RT766_P75DB_STEP, mic_vol_tlv),
++	SDCA_DOUBLE_Q78_TLV("FU33 Boost Volume",
++		RT766_GAIN_REG(UAJ, PLATFORM_FU33, 1),
++		RT766_GAIN_REG(UAJ, PLATFORM_FU33, 2),
++		RT766_HS_BOOST_VOL_MIN, RT766_HS_BOOST_VOL_MAX, RT766_2DB_STEP, boost_vol_tlv),
++
++	SOC_DOUBLE_EXT("FU21 Playback Switch", SND_SOC_NOPM, 0, 1, 1, 0,
++		rt766_sdca_fu21_playback_get, rt766_sdca_fu21_playback_put),
++	SDCA_DOUBLE_Q78_TLV("FU21 Playback Volume",
++		RT766_VOLUME_REG(AMP, USER_FU21, 1),
++		RT766_VOLUME_REG(AMP, USER_FU21, 2),
++		RT766_SPK_VOL_MIN, RT766_P_VOL_MAX, RT766_P75DB_STEP, spk_vol_tlv),
++	SOC_ENUM("RX Channel Select", rt766_rx_data_ch_enum),
++
++	RT_SDCA_FU_CTRL("FU113 Capture Switch",
++		RT766_MUTE_REG(MIC, USER_FU113, 1), 1, 1, 4, rt766_dmic_fu_info,
++		rt766_sdca_dmic_fu113_capture_get, rt766_sdca_dmic_fu113_capture_put),
++	RT_SDCA_EXT_TLV("FU113 Capture Volume",
++		RT766_VOLUME_REG(MIC, USER_FU113, 1),
++		rt766_sdca_dmic_set_gain_get, rt766_sdca_dmic_set_gain_put,
++		4, 0x3f, mic_vol_tlv, rt766_dmic_fu_info),
++};
++
++static const struct snd_soc_dapm_widget rt766_sdca_dapm_widgets[] = {
++	/* UAJ */
++	SND_SOC_DAPM_OUTPUT("HP"),
++	SND_SOC_DAPM_INPUT("MIC2"),
++	SND_SOC_DAPM_SUPPLY("PDE 47", SND_SOC_NOPM, 0, 0,
++		rt766_sdca_pde47_event,
++		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
++	SND_SOC_DAPM_SUPPLY("PDE 34", SND_SOC_NOPM, 0, 0,
++		rt766_sdca_pde34_event,
++		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
++	SND_SOC_DAPM_DAC_E("FU 41", NULL, SND_SOC_NOPM, 0, 0,
++		rt766_sdca_fu41_event,
++		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
++	SND_SOC_DAPM_ADC_E("FU 36", NULL, SND_SOC_NOPM, 0, 0,
++		rt766_sdca_fu36_event,
++		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
++	SND_SOC_DAPM_AIF_IN("DP3RX", "DP3 Playback", 0, SND_SOC_NOPM, 0, 0),
++	SND_SOC_DAPM_AIF_OUT("DP12TX", "DP12 Capture", 0, SND_SOC_NOPM, 0, 0),
++
++	/* AMP */
++	SND_SOC_DAPM_OUTPUT("SPOL"),
++	SND_SOC_DAPM_OUTPUT("SPOR"),
++	SND_SOC_DAPM_DAC_E("FU 21", NULL, SND_SOC_NOPM, 0, 0,
++		rt766_sdca_fu21_event,
++		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
++	SND_SOC_DAPM_SUPPLY("PDE 23", SND_SOC_NOPM, 0, 0,
++		rt766_sdca_pde23_event,
++		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
++	SND_SOC_DAPM_AIF_IN("DP1RX", "DP1 Playback", 0, SND_SOC_NOPM, 0, 0),
++
++	/* DMIC */
++	SND_SOC_DAPM_INPUT("DMIC1"),
++	SND_SOC_DAPM_INPUT("DMIC2"),
++	SND_SOC_DAPM_SUPPLY("PDE 11", SND_SOC_NOPM, 0, 0,
++		rt766_sdca_pde11_event,
++		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
++	SND_SOC_DAPM_ADC_E("FU 113", NULL, SND_SOC_NOPM, 0, 0,
++		rt766_sdca_fu113_event,
++		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
++	SND_SOC_DAPM_AIF_OUT("DP8TX", "DP8 Capture", 0, SND_SOC_NOPM, 0, 0),
++};
++
++static const struct snd_soc_dapm_route rt766_sdca_audio_map[] = {
++	{ "FU 41", NULL, "DP3RX" },
++	{ "DP12TX", NULL, "FU 36" },
++	{ "FU 36", NULL, "PDE 34" },
++	{ "FU 36", NULL, "MIC2" },
++	{ "HP", NULL, "PDE 47" },
++	{ "HP", NULL, "FU 41" },
++
++	{ "FU 21", NULL, "DP1RX" },
++	{ "FU 21", NULL, "PDE 23" },
++	{ "SPOL", NULL, "FU 21" },
++	{ "SPOR", NULL, "FU 21" },
++
++	{"DP8TX", NULL, "FU 113"},
++	{"FU 113", NULL, "PDE 11"},
++	{"FU 113", NULL, "DMIC1"},
++	{"FU 113", NULL, "DMIC2"},
++};
++
++static int rt766_sdca_probe(struct snd_soc_component *component)
++{
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++	struct device *dev = &rt766->slave->dev;
++	int ret;
++
++	rt766->component = component;
++
++	ret = pm_runtime_resume(component->dev);
++	if (ret < 0 && ret != -EACCES)
++		return ret;
++
++	if (rt766->uaj_func_data) {
++		dev_dbg(dev, "%s : irq %d\n", __func__, rt766->slave->irq);
++
++		rt766->irq_info = devm_sdca_irq_allocate(dev, rt766->regmap, rt766->slave->irq);
++		if (IS_ERR(rt766->irq_info))
++			return PTR_ERR(rt766->irq_info);
++
++		ret = rt766_sdca_irq_ctl(rt766, rt766->uaj_func_data,
++			component, rt766->irq_info, true);
++		if (ret < 0) {
++			dev_err(dev, "Failed to request UAJ SDCA IRQ: %d\n", ret);
++			return ret;
++		}
++
++		if (rt766->hid_func_data) {
++			ret = rt766_sdca_irq_ctl(rt766, rt766->hid_func_data,
++				component, rt766->irq_info, true);
++			if (ret < 0) {
++				dev_err(dev, "Failed to request HID SDCA IRQ: %d\n", ret);
++				return ret;
++			}
++		}
++	}
++
++	return 0;
++}
++
++static void rt766_sdca_remove(struct snd_soc_component *component)
++{
++	struct rt766_sdca_priv *rt766  = snd_soc_component_get_drvdata(component);
++
++	sdca_irq_cleanup_late(component->dev, rt766->uaj_func_data, rt766->irq_info);
++	sdca_irq_cleanup_late(component->dev, rt766->hid_func_data, rt766->irq_info);
++}
++
++static const struct snd_soc_component_driver soc_sdca_dev_rt766 = {
++	.probe = rt766_sdca_probe,
++	.remove = rt766_sdca_remove,
++	.controls = rt766_sdca_controls,
++	.num_controls = ARRAY_SIZE(rt766_sdca_controls),
++	.dapm_widgets = rt766_sdca_dapm_widgets,
++	.num_dapm_widgets = ARRAY_SIZE(rt766_sdca_dapm_widgets),
++	.dapm_routes = rt766_sdca_audio_map,
++	.num_dapm_routes = ARRAY_SIZE(rt766_sdca_audio_map),
++	.set_jack = rt766_sdca_set_jack_detect,
++	.endianness = 1,
++};
++
++static int rt766_sdca_set_sdw_stream(struct snd_soc_dai *dai, void *sdw_stream,
++				int direction)
++{
++	snd_soc_dai_dma_data_set(dai, direction, sdw_stream);
++
++	return 0;
++}
++
++static void rt766_sdca_shutdown(struct snd_pcm_substream *substream,
++				struct snd_soc_dai *dai)
++{
++	snd_soc_dai_set_dma_data(dai, substream, NULL);
++}
++
++static int rt766_sdca_pcm_hw_params(struct snd_pcm_substream *substream,
++				struct snd_pcm_hw_params *params,
++				struct snd_soc_dai *dai)
++{
++	struct snd_soc_component *component = dai->component;
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++	struct sdw_stream_config stream_config;
++	struct sdw_port_config port_config;
++	enum sdw_data_direction direction;
++	struct sdw_stream_runtime *sdw_stream;
++	unsigned int sampling_rate;
++	int retval, port;
++
++	dev_dbg(dai->dev, "%s %s id %d", __func__, dai->name, dai->id);
++	sdw_stream = snd_soc_dai_get_dma_data(dai, substream);
++
++	if (!sdw_stream)
++		return -EINVAL;
++
++	if (!rt766->slave)
++		return -EINVAL;
++
++	/* SoundWire specific configuration */
++	snd_sdw_params_to_config(substream, params, &stream_config, &port_config);
++
++	/* SoundWire specific configuration */
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
++		direction = SDW_DATA_DIR_RX;
++		if (dai->id == RT766_AIF1)
++			port = 3;
++		else if (dai->id == RT766_AIF2)
++			port = 1;
++		else
++			return -EINVAL;
++	} else {
++		direction = SDW_DATA_DIR_TX;
++		if (dai->id == RT766_AIF1)
++			port = 12;
++		else if (dai->id == RT766_AIF3)
++			port = 8;
++		else
++			return -EINVAL;
++	}
++
++	port_config.num = port;
++	retval = sdw_stream_add_slave(rt766->slave, &stream_config,
++					&port_config, 1, sdw_stream);
++	if (retval) {
++		dev_err(dai->dev, "%s: Unable to configure port\n", __func__);
++		return retval;
++	}
++
++	if (params_channels(params) > 16) {
++		dev_err(component->dev, "%s: Unsupported channels %d\n",
++			__func__, params_channels(params));
++		return -EINVAL;
++	}
++
++	/* sampling rate configuration */
++	switch (params_rate(params)) {
++	case 44100:
++		sampling_rate = RT766_SDCA_RATE_44100HZ;
++		break;
++	case 48000:
++		sampling_rate = RT766_SDCA_RATE_48000HZ;
++		break;
++	case 96000:
++		sampling_rate = RT766_SDCA_RATE_96000HZ;
++		break;
++	case 192000:
++		sampling_rate = RT766_SDCA_RATE_192000HZ;
++		break;
++	default:
++		dev_err(component->dev, "%s: Rate %d is not supported\n",
++			__func__, params_rate(params));
++		return -EINVAL;
++	}
++
++	/* set sampling frequency */
++	switch (dai->id) {
++	case RT766_AIF1:
++		regmap_write(rt766->regmap,
++			RT766_SDCA_CTL(UAJ, CS41, SDCA_CTL_CS_SAMPLERATEINDEX),
++			sampling_rate);
++		regmap_write(rt766->regmap,
++			RT766_SDCA_CTL(UAJ, CS36, SDCA_CTL_CS_SAMPLERATEINDEX),
++			sampling_rate);
++		break;
++	case RT766_AIF2:
++		regmap_write(rt766->regmap,
++			RT766_SDCA_CTL(AMP, CS21, SDCA_CTL_CS_SAMPLERATEINDEX),
++			sampling_rate);
++		break;
++	case RT766_AIF3:
++		regmap_write(rt766->regmap,
++			RT766_SDCA_CTL(MIC, CS113, SDCA_CTL_CS_SAMPLERATEINDEX),
++			sampling_rate);
++		break;
++	default:
++		dev_err(component->dev, "%s: Wrong DAI id\n", __func__);
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int rt766_sdca_pcm_hw_free(struct snd_pcm_substream *substream,
++				struct snd_soc_dai *dai)
++{
++	struct snd_soc_component *component = dai->component;
++	struct rt766_sdca_priv *rt766 = snd_soc_component_get_drvdata(component);
++	struct sdw_stream_runtime *sdw_stream =
++		snd_soc_dai_get_dma_data(dai, substream);
++
++	if (!rt766->slave)
++		return -EINVAL;
++
++	sdw_stream_remove_slave(rt766->slave, sdw_stream);
++	return 0;
++}
++
++#define RT766_STEREO_RATES (SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_96000 | \
++			SNDRV_PCM_RATE_192000)
++#define RT766_DAC_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE)
++#define RT766_ADC_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE | \
++			SNDRV_PCM_FMTBIT_S32_LE)
++
++static const struct snd_soc_dai_ops rt766_sdca_ops = {
++	.hw_params	= rt766_sdca_pcm_hw_params,
++	.hw_free	= rt766_sdca_pcm_hw_free,
++	.set_stream	= rt766_sdca_set_sdw_stream,
++	.shutdown	= rt766_sdca_shutdown,
++};
++
++static struct snd_soc_dai_driver rt766_sdca_dai[] = {
++	{
++		.name = "rt766-sdca-aif1",
++		.id = RT766_AIF1,
++		.playback = {
++			.stream_name = "DP3 Playback",
++			.channels_min = 1,
++			.channels_max = 2,
++			.rates = RT766_STEREO_RATES,
++			.formats = RT766_DAC_FORMATS,
++		},
++		.capture = {
++			.stream_name = "DP12 Capture",
++			.channels_min = 1,
++			.channels_max = 2,
++			.rates = RT766_STEREO_RATES,
++			.formats = RT766_ADC_FORMATS,
++		},
++		.ops = &rt766_sdca_ops,
++		.symmetric_rate = 1,
++	},
++	{
++		.name = "rt766-sdca-aif2",
++		.id = RT766_AIF2,
++		.playback = {
++			.stream_name = "DP1 Playback",
++			.channels_min = 1,
++			.channels_max = 4,
++			.rates = RT766_STEREO_RATES,
++			.formats = RT766_DAC_FORMATS,
++		},
++		.ops = &rt766_sdca_ops,
++	},
++	{
++		.name = "rt766-sdca-aif3",
++		.id = RT766_AIF3,
++		.capture = {
++			.stream_name = "DP8 Capture",
++			.channels_min = 1,
++			.channels_max = 4,
++			.rates = RT766_STEREO_RATES,
++			.formats = RT766_ADC_FORMATS,
++		},
++		.ops = &rt766_sdca_ops,
++	}
++};
++
++static unsigned int rt766_find_dt_rates(struct device *dev, struct sdca_function_data *function,
++							const char *label)
++{
++	struct snd_soc_pcm_stream stream;
++	struct sdca_entity *entity;
++	int i, ret;
++
++	for (i = 0; i < function->num_entities; i++) {
++		entity = &function->entities[i];
++
++		if (strcmp(entity->label, label))
++			continue;
++
++		/* Can't check earlier as only terminals have an iot member. */
++		if (!entity->iot.is_dataport)
++			continue;
++
++		ret = sdca_asoc_populate_rate_format(dev, function, entity, &stream);
++		if (ret < 0) {
++			dev_dbg(dev, "%s: failed to parse rates for entity %s\n",
++				__func__, entity->label);
++			return 0;
++		}
++
++		dev_dbg(dev, "%s: %s supports rates 0x%08x\n", __func__, entity->label, stream.rates);
++	}
++
++	return stream.rates;
++}
++
++int rt766_sdca_init(struct device *dev, struct regmap *regmap, struct sdw_slave *slave)
++{
++	struct sdca_function_data *func_data_ptr;
++	struct snd_soc_dai_driver *dai_drv;
++	struct rt766_sdca_priv *rt766;
++	unsigned int rates;
++	int ret;
++	int i;
++
++	rt766 = devm_kzalloc(dev, sizeof(*rt766), GFP_KERNEL);
++	if (!rt766)
++		return -ENOMEM;
++
++	dev_set_drvdata(dev, rt766);
++	rt766->slave = slave;
++	rt766->regmap = regmap;
++
++	regcache_cache_only(rt766->regmap, true);
++
++	ret = devm_mutex_init(dev, &rt766->disable_irq_lock);
++	if (ret < 0) {
++		dev_err(dev, "Failed to initialize mutex\n");
++		return ret;
++	}
++
++	/*
++	 * Mark hw_init to false
++	 * HW init will be performed when device reports present
++	 */
++	rt766->hw_init = false;
++	rt766->first_hw_init = false;
++	rt766->fu41_dapm_mute = true;
++	rt766->fu41_mixer_l_mute = rt766->fu41_mixer_r_mute = false;
++	rt766->fu36_dapm_mute = true;
++	rt766->fu36_mixer_l_mute = rt766->fu36_mixer_r_mute = true;
++	rt766->fu21_dapm_mute = true;
++	rt766->fu21_mixer_l_mute = rt766->fu21_mixer_r_mute = false;
++	rt766->fu113_dapm_mute = true;
++	rt766->fu113_mixer_mute[0] = rt766->fu113_mixer_mute[1] =
++		rt766->fu113_mixer_mute[2] = rt766->fu113_mixer_mute[3] = true;
++
++	dai_drv = devm_kzalloc(dev, sizeof(struct snd_soc_dai_driver) * ARRAY_SIZE(rt766_sdca_dai), GFP_KERNEL);
++	if (!dai_drv) {
++		dev_err(dev, "Failed to allocate memory for DAI driver\n");
++		ret = -ENOMEM;
++		goto _sdw_init_err_;
++	}
++	memcpy(dai_drv, rt766_sdca_dai, sizeof(struct snd_soc_dai_driver) * ARRAY_SIZE(rt766_sdca_dai));
++
++	/* get SDCA function data */
++	dev_dbg(dev, "SDCA functions found: %d", slave->sdca_data.num_functions);
++	for (i = 0; i < slave->sdca_data.num_functions; i++) {
++		func_data_ptr = devm_kzalloc(dev, sizeof(*func_data_ptr), GFP_KERNEL);
++		if (!func_data_ptr) {
++			dev_err(dev, "Failed to allocate memory for function data\n");
++			ret = -ENOMEM;
++			goto _free_dai_drv_;
++		}
++
++		func_data_ptr->desc = &slave->sdca_data.function[i];
++		ret = sdca_parse_function(dev, func_data_ptr);
++		if (ret) {
++			devm_kfree(dev, func_data_ptr);
++			goto _free_dai_drv_;
++		}
++		dev_dbg(dev, "Function type=%d, num_entities=%d",
++			slave->sdca_data.function[i].type, func_data_ptr->num_entities);
++
++		switch (slave->sdca_data.function[i].type) {
++		case SDCA_FUNCTION_TYPE_UAJ:
++			rt766->uaj_func_data = func_data_ptr;
++			/*
++			 * Some machines may only support a subset of the sample rates supported by the codec.
++			 * Therefore, we need to parse the supported sample rates from the DisCo table and
++			 * configure them in the DAI. If the DisCo table does not provide sample rate information,
++			 * we will fall back to the default supported rates defined in the codec driver.
++			 */
++			rates = rt766_find_dt_rates(dev, func_data_ptr, "IT 41");
++			if (rates)
++				dai_drv[RT766_DAI_UAJ].playback.rates = rates;
++
++			rates = rt766_find_dt_rates(dev, func_data_ptr, "OT 36");
++			if (rates)
++				dai_drv[RT766_DAI_UAJ].capture.rates = rates;
++			break;
++		case SDCA_FUNCTION_TYPE_SMART_AMP:
++			rt766->sa_func_data = func_data_ptr;
++			rates = rt766_find_dt_rates(dev, func_data_ptr, "IT 21");
++			if (rates)
++				dai_drv[RT766_DAI_AMP].playback.rates = rates;
++			break;
++		case SDCA_FUNCTION_TYPE_SMART_MIC:
++			rt766->sm_func_data = func_data_ptr;
++			rates = rt766_find_dt_rates(dev, func_data_ptr, "OT 113");
++			if (rates)
++				dai_drv[RT766_DAI_MIC].capture.rates = rates;
++			break;
++		case SDCA_FUNCTION_TYPE_HID:
++			rt766->hid_func_data = func_data_ptr;
++			break;
++		default:
++			dev_dbg(dev, "Unexpected SDCA function type found: %d",
++				slave->sdca_data.function[i].type);
++		}
++	}
++
++	ret =  devm_snd_soc_register_component(dev,
++			&soc_sdca_dev_rt766, dai_drv, ARRAY_SIZE(rt766_sdca_dai));
++	if (ret < 0)
++		goto _free_dai_drv_;
++
++	/* set autosuspend parameters */
++	pm_runtime_set_autosuspend_delay(dev, 3000);
++	pm_runtime_use_autosuspend(dev);
++
++	/* make sure the device does not suspend immediately */
++	pm_runtime_mark_last_busy(dev);
++
++	pm_runtime_enable(dev);
++	dev_dbg(dev, "%s\n", __func__);
++	return 0;
++
++_free_dai_drv_:
++	if (dai_drv)
++		devm_kfree(dev, dai_drv);
++
++_sdw_init_err_:
++	return ret;
++}
++
++static int rt766_func_initialize(struct rt766_sdca_priv *rt766, struct sdca_function_data *func_data)
++{
++	struct device *dev = &rt766->slave->dev;
++	unsigned int func_status_reg;
++	unsigned int func_status;
++	int ret;
++
++	switch (func_data->desc->type) {
++	case SDCA_FUNCTION_TYPE_UAJ:
++		func_status_reg = RT766_FUNC_STATUS_REG(UAJ);
++		break;
++	case SDCA_FUNCTION_TYPE_SMART_AMP:
++		func_status_reg = RT766_FUNC_STATUS_REG(AMP);
++		break;
++	case SDCA_FUNCTION_TYPE_SMART_MIC:
++		func_status_reg = RT766_FUNC_STATUS_REG(MIC);
++		break;
++	case SDCA_FUNCTION_TYPE_HID:
++		func_status_reg = RT766_FUNC_STATUS_REG(HID);
++		break;
++	default:
++		dev_dbg(dev, "Unexpected SDCA function type found: %d",
++			func_data->desc->type);
++		return -EINVAL;
++	}
++
++	regmap_read(rt766->regmap, func_status_reg, &func_status);
++	dev_dbg(dev, "%s, %s func_status=0x%x\n", __func__, func_data->desc->name, func_status);
++
++	if ((func_status & SDCA_CTL_ENTITY_0_FUNCTION_NEEDS_INITIALIZATION) || (!rt766->first_hw_init)) {
++		ret = sdca_regmap_write_init(dev, rt766->regmap, func_data);
++		if (ret) {
++			dev_err(dev, "%s initialization table update failed\n", func_data->desc->name);
++			goto _func_init_err_;
++		}
++
++		regmap_write(rt766->regmap, func_status_reg,
++			SDCA_CTL_ENTITY_0_FUNCTION_NEEDS_INITIALIZATION);
++	}
++
++	return 0;
++
++_func_init_err_:
++	dev_err(dev, "%s: %s init writes failed, err=%d", __func__, func_data->desc->name, ret);
++	return ret;
++}
++
++int rt766_sdca_io_init(struct device *dev, struct sdw_slave *slave)
++{
++	struct rt766_sdca_priv *rt766 = dev_get_drvdata(dev);
++	unsigned int val;
++
++	rt766->disable_irq = false;
++
++	if (rt766->hw_init)
++		return 0;
++
++	regcache_cache_only(rt766->regmap, false);
++	if (rt766->first_hw_init) {
++		regcache_cache_bypass(rt766->regmap, true);
++	} else {
++		/*
++		 *  PM runtime status is marked as 'active' only when a Slave reports as Attached
++		 */
++
++		/* update count of parent 'active' children */
++		pm_runtime_set_active(&slave->dev);
++	}
++
++	pm_runtime_get_noresume(&slave->dev);
++
++	regmap_read(rt766->regmap, RT766_BOND_LATCH_ID, &val);
++	dev_dbg(&slave->dev, "%s bond ID=0x%x (%s)\n", __func__, val, (val == 0x1) ? "RT767" : "RT766");
++
++	/* check function status and initialize if needed */
++	if (rt766->uaj_func_data)
++		rt766_func_initialize(rt766, rt766->uaj_func_data);
++	if (rt766->sa_func_data)
++		rt766_func_initialize(rt766, rt766->sa_func_data);
++	if (rt766->sm_func_data)
++		rt766_func_initialize(rt766, rt766->sm_func_data);
++	if (rt766->hid_func_data)
++		rt766_func_initialize(rt766, rt766->hid_func_data);
++
++	if (rt766->first_hw_init) {
++		regcache_cache_bypass(rt766->regmap, false);
++		regcache_mark_dirty(rt766->regmap);
++	} else {
++		rt766->first_hw_init = true;
++	}
++
++	/* Mark Slave initialization complete */
++	rt766->hw_init = true;
++
++	dev_dbg(&slave->dev, "%s hw_init complete\n", __func__);
++
++	pm_runtime_put_autosuspend(&slave->dev);
++
++	return 0;
++}
++
++MODULE_DESCRIPTION("ASoC RT766 SDCA SDW driver");
++MODULE_AUTHOR("Shuming Fan <shumingf@realtek.com>");
++MODULE_LICENSE("GPL");
++MODULE_IMPORT_NS("SND_SOC_SDCA");
+diff --git a/sound/soc/codecs/rt766-sdca.h b/sound/soc/codecs/rt766-sdca.h
+new file mode 100644
+index 0000000..de40640
+--- /dev/null
++++ b/sound/soc/codecs/rt766-sdca.h
+@@ -0,0 +1,140 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * rt766-sdca.h -- RT766 SDCA ALSA SoC audio driver header
++ *
++ * Copyright(c) 2026 Realtek Semiconductor Corp.
++ */
++
++#ifndef __RT766_H__
++#define __RT766_H__
++
++#include <linux/hid.h>
++#include <linux/pm.h>
++#include <linux/regmap.h>
++#include <linux/soundwire/sdw.h>
++#include <linux/soundwire/sdw_type.h>
++#include <sound/soc.h>
++#include <linux/workqueue.h>
++
++struct  rt766_sdca_priv {
++	struct regmap *regmap;
++	struct snd_soc_component *component;
++	struct sdw_slave *slave;
++	bool hw_init;
++	bool first_hw_init;
++	struct snd_soc_jack *hs_jack;
++	struct mutex disable_irq_lock; /* SDCA irq lock protection */
++	bool disable_irq;
++	int jack_type;
++	bool fu41_dapm_mute;
++	bool fu41_mixer_l_mute;
++	bool fu41_mixer_r_mute;
++	bool fu113_dapm_mute;
++	bool fu113_mixer_mute[4];
++	bool fu21_dapm_mute;
++	bool fu21_mixer_l_mute;
++	bool fu21_mixer_r_mute;
++	bool fu36_dapm_mute;
++	bool fu36_mixer_l_mute;
++	bool fu36_mixer_r_mute;
++	struct sdca_function_data *uaj_func_data;
++	struct sdca_function_data *sm_func_data;
++	struct sdca_function_data *sa_func_data;
++	struct sdca_function_data *hid_func_data;
++	struct sdca_interrupt_info *irq_info;
++	struct hid_device *hid;
++};
++
++/* vendor registers */
++#define RT766_VERSION_ID	0xc404
++#define RT766_DEV_ID1		0xc405
++#define RT766_DEV_ID0		0xc406
++#define RT766_BOND_LATCH_ID	0xc407
++
++#define RT766_HP_POWER_STATE		0x1000004
++#define RT766_HP_FSM_CTL2_1		0x100000d
++
++/* MCU Patch address */
++#define RT766_MCU_PATCH_ADDR1_START	0x10010000
++#define RT766_MCU_PATCH_ADDR1_END	0x10011fff
++#define RT766_MCU_PATCH_ADDR2_START	0x10020000
++#define RT766_MCU_PATCH_ADDR2_END	0x10023fff
++
++/* Buffer address for HID */
++#define RT766_BUF_ADDR_HID1	0x44030000
++#define RT766_BUF_ADDR_HID2	0x44030020
++
++/* SDCA (Channel) */
++#define RT766_CH_1	0x01
++#define RT766_CH_2	0x02
++#define RT766_CH_3	0x03
++#define RT766_CH_4	0x04
++
++/* RT766 SDCA Control - function number */
++#define RT766_FUNC_NUM_UAJ 0x01
++#define RT766_FUNC_NUM_MIC 0x02
++#define RT766_FUNC_NUM_HID 0x03
++#define RT766_FUNC_NUM_AMP 0x04
++
++/* RT766 SDCA entity */
++#define RT766_SDCA_ENT_0		0x00
++#define RT766_SDCA_ENT_HID101		0x01
++#define RT766_SDCA_ENT_GE49		0x49
++#define RT766_SDCA_ENT_USER_FU41	0x05
++#define RT766_SDCA_ENT_USER_FU36	0x0f
++#define RT766_SDCA_ENT_USER_FU21	0x03
++#define RT766_SDCA_ENT_USER_FU113	0x30
++#define RT766_SDCA_ENT_PDE23		0x33
++#define RT766_SDCA_ENT_PDE47		0x28
++#define RT766_SDCA_ENT_PDE11		0x2a
++#define RT766_SDCA_ENT_PDE34		0x29
++#define RT766_SDCA_ENT_CS41		0x01
++#define RT766_SDCA_ENT_CS36		0x11
++#define RT766_SDCA_ENT_CS113		0x12
++#define RT766_SDCA_ENT_CS21		0x21
++#define RT766_SDCA_ENT_PLATFORM_FU33	0x44
++#define RT766_SDCA_ENT_PPU21		0x04
++
++/* sample frequency index */
++#define RT766_SDCA_RATE_44100HZ		0x08
++#define RT766_SDCA_RATE_48000HZ		0x09
++#define RT766_SDCA_RATE_96000HZ		0x0b
++#define RT766_SDCA_RATE_192000HZ	0x0d
++
++/* SDCA Register macros */
++#define RT766_MUTE_REG(func, fu, ch) \
++	SDW_SDCA_CTL(RT766_FUNC_NUM_##func, RT766_SDCA_ENT_##fu, SDCA_CTL_FU_MUTE, RT766_CH_##ch)
++
++#define RT766_VOLUME_REG(func, fu, ch) \
++	SDW_SDCA_CTL(RT766_FUNC_NUM_##func, RT766_SDCA_ENT_##fu, SDCA_CTL_FU_CHANNEL_VOLUME, RT766_CH_##ch)
++
++#define RT766_GAIN_REG(func, fu, ch) \
++	SDW_SDCA_CTL(RT766_FUNC_NUM_##func, RT766_SDCA_ENT_##fu, SDCA_CTL_FU_GAIN, RT766_CH_##ch)
++
++#define RT766_PDE_REQ_REG(func, pde) \
++	SDW_SDCA_CTL(RT766_FUNC_NUM_##func, RT766_SDCA_ENT_##pde, SDCA_CTL_PDE_REQUESTED_PS, 0)
++
++#define RT766_PDE_ACTUAL_REG(func, pde) \
++	SDW_SDCA_CTL(RT766_FUNC_NUM_##func, RT766_SDCA_ENT_##pde, SDCA_CTL_PDE_ACTUAL_PS, 0)
++
++#define RT766_FUNC_STATUS_REG(func) \
++	SDW_SDCA_CTL(RT766_FUNC_NUM_##func, RT766_SDCA_ENT_0, SDCA_CTL_ENTITY_0_FUNCTION_STATUS, 0)
++
++#define RT766_SDCA_CTL(func, ent, ctl) \
++	SDW_SDCA_CTL(RT766_FUNC_NUM_##func, RT766_SDCA_ENT_##ent, ctl, 0)
++
++enum {
++	RT766_AIF1,
++	RT766_AIF2,
++	RT766_AIF3,
++};
++
++enum {
++	RT766_DAI_UAJ,
++	RT766_DAI_AMP,
++	RT766_DAI_MIC,
++};
++
++int rt766_sdca_io_init(struct device *dev, struct sdw_slave *slave);
++int rt766_sdca_init(struct device *dev, struct regmap *regmap, struct sdw_slave *slave);
++#endif /* __RT766_H__ */
+diff --git a/sound/soc/codecs/tac5xx2-sdw.c b/sound/soc/codecs/tac5xx2-sdw.c
+index aa986e9..44d6822 100644
+--- a/sound/soc/codecs/tac5xx2-sdw.c
++++ b/sound/soc/codecs/tac5xx2-sdw.c
+@@ -822,7 +822,7 @@ static int tac_sdw_hw_params(struct snd_pcm_substream *substream,
+ 		return ret;
+ 	}
+ 
+-	ret = sdca_asoc_pde_poll_actual_ps(tac_dev->dev, tac_dev->regmap, function_id, pde_entity,
++	ret = sdca_asoc_pde_poll_actual_ps(tac_dev->regmap, function_id, pde_entity,
+ 					   SDCA_PDE_PS3, SDCA_PDE_PS0, NULL, 0);
+ 	if (ret)
+ 		dev_err(tac_dev->dev, "failed to transition func %d, pde %d from PS3 -> PS0, err=%d\n",
+@@ -869,7 +869,7 @@ static int tac_sdw_pcm_hw_free(struct snd_pcm_substream *substream,
+ 		return ret;
+ 	}
+ 
+-	ret = sdca_asoc_pde_poll_actual_ps(tac_dev->dev, tac_dev->regmap, function_id,
++	ret = sdca_asoc_pde_poll_actual_ps(tac_dev->regmap, function_id,
+ 					   pde_entity, SDCA_PDE_PS0, SDCA_PDE_PS3,
+ 					   NULL, 0);
+ 	if (ret)
+@@ -1944,7 +1944,7 @@ static s32 tac_sdw_probe(struct sdw_slave *peripheral,
+ 						     "failed to allocate %s function data",
+ 						     func_name);
+ 			function_data->desc = &peripheral->sdca_data.function[i];
+-			ret = sdca_parse_function(dev, peripheral, function_data);
++			ret = sdca_parse_function(dev, function_data);
+ 			if (!ret)
+ 				*func_ptr = function_data;
+ 			else
+diff --git a/sound/soc/codecs/tas2783-sdw.c b/sound/soc/codecs/tas2783-sdw.c
+index 571dfcb..d23ed75 100644
+--- a/sound/soc/codecs/tas2783-sdw.c
++++ b/sound/soc/codecs/tas2783-sdw.c
+@@ -1350,7 +1350,7 @@ static s32 tas_sdw_probe(struct sdw_slave *peripheral,
+ 		function_data->desc = &peripheral->sdca_data.function[i];
+ 
+ 		/* Parse the function */
+-		ret = sdca_parse_function(dev, peripheral, function_data);
++		ret = sdca_parse_function(dev, function_data);
+ 		if (!ret)
+ 			tas_dev->sa_func_data = function_data;
+ 		else
+diff --git a/sound/soc/sdca/sdca_asoc.c b/sound/soc/sdca/sdca_asoc.c
+index b4dedba..64c217c 100644
+--- a/sound/soc/sdca/sdca_asoc.c
++++ b/sound/soc/sdca/sdca_asoc.c
+@@ -364,7 +364,6 @@ static int entity_parse_ot(struct device *dev,
+ 
+ /**
+  * sdca_asoc_pde_poll_actual_ps - Verify PDE power state reached target state
+- * @dev: Pointer to the device for error logging.
+  * @regmap: Register map for reading ACTUAL_PS register.
+  * @function_id: SDCA function identifier.
+  * @entity_id: SDCA entity identifier for the power domain.
+@@ -389,11 +388,11 @@ static int entity_parse_ot(struct device *dev,
+  * polling times out before reaching the target state, or a negative error code if
+  * a register read fails.
+  */
+-int sdca_asoc_pde_poll_actual_ps(struct device *dev, struct regmap *regmap,
++int sdca_asoc_pde_poll_actual_ps(struct regmap *regmap,
+ 				 int function_id, int entity_id,
+-			    int from_ps, int to_ps,
+-			    const struct sdca_pde_delay *pde_delays,
+-			    int num_delays)
++				 int from_ps, int to_ps,
++				 const struct sdca_pde_delay *pde_delays,
++				 int num_delays)
+ {
+ 	static const int polls = 100;
+ 	static const int default_poll_us = 1000;
+@@ -451,7 +450,7 @@ static int entity_pde_event(struct snd_soc_dapm_widget *widget,
+ 		return 0;
+ 	}
+ 
+-	ret = sdca_asoc_pde_poll_actual_ps(component->dev, component->regmap,
++	ret = sdca_asoc_pde_poll_actual_ps(component->regmap,
+ 					   SDW_SDCA_CTL_FUNC(widget->reg),
+ 					   SDW_SDCA_CTL_ENT(widget->reg),
+ 					   from, to,
+@@ -1231,7 +1230,7 @@ static u64 width_find_mask(unsigned int bits)
+ 	}
+ }
+ 
+-static int populate_rate_format(struct device *dev,
++int sdca_asoc_populate_rate_format(struct device *dev,
+ 				struct sdca_function_data *function,
+ 				struct sdca_entity *entity,
+ 				struct snd_soc_pcm_stream *stream)
+@@ -1292,6 +1291,7 @@ static int populate_rate_format(struct device *dev,
+ 
+ 	return 0;
+ }
++EXPORT_SYMBOL_NS(sdca_asoc_populate_rate_format, "SND_SOC_SDCA");
+ 
+ /**
+  * sdca_asoc_populate_dais - fill in an array of DAI drivers for a Function
+@@ -1344,7 +1344,7 @@ int sdca_asoc_populate_dais(struct device *dev, struct sdca_function_data *funct
+ 		stream->channels_min = 1;
+ 		stream->channels_max = SDCA_MAX_CHANNEL_COUNT;
+ 
+-		ret = populate_rate_format(dev, function, entity, stream);
++		ret = sdca_asoc_populate_rate_format(dev, function, entity, stream);
+ 		if (ret)
+ 			return ret;
+ 
+diff --git a/sound/soc/sdca/sdca_class_function.c b/sound/soc/sdca/sdca_class_function.c
+index 2fb2b04..cc7045d 100644
+--- a/sound/soc/sdca/sdca_class_function.c
++++ b/sound/soc/sdca/sdca_class_function.c
+@@ -329,7 +329,7 @@ static int class_function_probe(struct auxiliary_device *auxdev,
+ 	drv->core = core;
+ 	drv->function = &sdev->function;
+ 
+-	ret = sdca_parse_function(dev, core->sdw, drv->function);
++	ret = sdca_parse_function(dev, drv->function);
+ 	if (ret)
+ 		return ret;
+ 
+diff --git a/sound/soc/sdca/sdca_function_device.c b/sound/soc/sdca/sdca_function_device.c
+index b5ca982..5460487 100644
+--- a/sound/soc/sdca/sdca_function_device.c
++++ b/sound/soc/sdca/sdca_function_device.c
+@@ -32,7 +32,8 @@ static void sdca_dev_release(struct device *dev)
+ 
+ /* alloc, init and add link devices */
+ static struct sdca_dev *sdca_dev_register(struct device *parent,
+-					  struct sdca_function_desc *function_desc)
++					  struct sdca_function_desc *function_desc,
++					  struct acpi_table_swft *swft)
+ {
+ 	struct sdca_dev *sdev;
+ 	struct auxiliary_device *auxdev;
+@@ -50,6 +51,7 @@ static struct sdca_dev *sdca_dev_register(struct device *parent,
+ 	auxdev->dev.release = sdca_dev_release;
+ 
+ 	sdev->function.desc = function_desc;
++	sdev->function.fdl_data.swft = swft;
+ 
+ 	rc = ida_alloc(&sdca_function_ida, GFP_KERNEL);
+ 	if (rc < 0) {
+@@ -99,7 +101,8 @@ int sdca_dev_register_functions(struct sdw_slave *slave)
+ 		struct sdca_dev *func_dev;
+ 
+ 		func_dev = sdca_dev_register(&slave->dev,
+-					     &sdca_data->function[i]);
++					     &sdca_data->function[i],
++					     sdca_data->swft);
+ 		if (IS_ERR(func_dev)) {
+ 			ret = PTR_ERR(func_dev);
+ 			/*
+diff --git a/sound/soc/sdca/sdca_functions.c b/sound/soc/sdca/sdca_functions.c
+index 7a7a9f1..e01d91e 100644
+--- a/sound/soc/sdca/sdca_functions.c
++++ b/sound/soc/sdca/sdca_functions.c
+@@ -7,6 +7,7 @@
+  */
+ 
+ #include <linux/acpi.h>
++#include <linux/array_size.h>
+ #include <linux/byteorder/generic.h>
+ #include <linux/cleanup.h>
+ #include <linux/device.h>
+@@ -18,7 +19,6 @@
+ #include <linux/types.h>
+ #include <sound/sdca.h>
+ #include <sound/sdca_function.h>
+-#include <sound/sdca_hid.h>
+ 
+ /*
+  * Should be long enough to encompass all the MIPI DisCo properties.
+@@ -1365,90 +1365,76 @@ bad_list:
+ 	return -EINVAL;
+ }
+ 
+-static int
+-find_sdca_entity_hide(struct device *dev, struct sdw_slave *sdw,
+-		      struct fwnode_handle *function_node,
+-		      struct fwnode_handle *entity_node, struct sdca_entity *entity)
++static int find_sdca_entity_hide(struct device *dev,
++				 struct fwnode_handle *entity_node,
++				 struct sdca_entity *entity)
+ {
+ 	struct sdca_entity_hide *hide = &entity->hide;
+-	unsigned int delay, *af_list = hide->af_number_list;
+-	int nval, ret;
+-	unsigned char *report_desc = NULL;
++	int num_reports, ret;
++	unsigned int delay;
+ 
+ 	ret = fwnode_property_read_u32(entity_node,
+-				       "mipi-sdca-RxUMP-ownership-transition-max-delay", &delay);
++				       "mipi-sdca-RxUMP-ownership-transition-max-delay",
++				       &delay);
+ 	if (!ret)
+ 		hide->max_delay = delay;
+ 
+-	nval = fwnode_property_count_u32(entity_node, "mipi-sdca-HIDTx-supported-report-ids");
+-	if (nval > 0) {
+-		hide->num_hidtx_ids = nval;
++	num_reports = fwnode_property_count_u32(entity_node,
++						"mipi-sdca-HIDTx-supported-report-ids");
++	if (num_reports < 0 && num_reports != -EINVAL) {
++		dev_err(dev, "%pfwP: failed to read hid tx ids: %d\n",
++			entity_node, num_reports);
++		return num_reports;
++	} else if (num_reports > 0) {
++		hide->num_hidtx_ids = num_reports;
+ 		hide->hidtx_ids = devm_kcalloc(dev, hide->num_hidtx_ids,
+ 					       sizeof(*hide->hidtx_ids), GFP_KERNEL);
+ 		if (!hide->hidtx_ids)
+ 			return -ENOMEM;
+ 
+-		ret = fwnode_property_read_u32_array(entity_node,
+-						     "mipi-sdca-HIDTx-supported-report-ids",
+-						     hide->hidtx_ids,
+-						     hide->num_hidtx_ids);
+-		if (ret < 0)
+-			return ret;
++		fwnode_property_read_u32_array(entity_node,
++					       "mipi-sdca-HIDTx-supported-report-ids",
++					       hide->hidtx_ids, hide->num_hidtx_ids);
+ 	}
+ 
+-	nval = fwnode_property_count_u32(entity_node, "mipi-sdca-HIDRx-supported-report-ids");
+-	if (nval > 0) {
+-		hide->num_hidrx_ids = nval;
++	num_reports = fwnode_property_count_u32(entity_node,
++						"mipi-sdca-HIDRx-supported-report-ids");
++	if (num_reports < 0 && num_reports != -EINVAL) {
++		dev_err(dev, "%pfwP: failed to read hid rx ids: %d\n",
++			entity_node, num_reports);
++		return num_reports;
++	} else if (num_reports > 0) {
++		hide->num_hidrx_ids = num_reports;
+ 		hide->hidrx_ids = devm_kcalloc(dev, hide->num_hidrx_ids,
+ 					       sizeof(*hide->hidrx_ids), GFP_KERNEL);
+ 		if (!hide->hidrx_ids)
+ 			return -ENOMEM;
+ 
+-		ret = fwnode_property_read_u32_array(entity_node,
+-						     "mipi-sdca-HIDRx-supported-report-ids",
+-						     hide->hidrx_ids,
+-						     hide->num_hidrx_ids);
+-		if (ret < 0)
+-			return ret;
++		fwnode_property_read_u32_array(entity_node,
++					       "mipi-sdca-HIDRx-supported-report-ids",
++					       hide->hidrx_ids, hide->num_hidrx_ids);
+ 	}
+ 
+-	nval = fwnode_property_count_u32(entity_node, "mipi-sdca-hide-related-audio-function-list");
+-	if (nval <= 0) {
++	/*
++	 * FIXME: This should probably link to the actual sdca_function_data pointer,
++	 * but updating to do so should probably wait until we have a user.
++	 */
++	num_reports = fwnode_property_count_u32(entity_node,
++						"mipi-sdca-hide-related-audio-function-list");
++	if (num_reports <= 0) {
+ 		dev_err(dev, "%pfwP: audio function numbers list missing: %d\n",
+-			entity_node, nval);
++			entity_node, num_reports);
+ 		return -EINVAL;
+-	} else if (nval > SDCA_MAX_FUNCTION_COUNT) {
+-		dev_err(dev, "%pfwP: maximum number of audio function exceeded\n", entity_node);
++	} else if (num_reports > ARRAY_SIZE(hide->af_number_list)) {
++		dev_err(dev, "%pfwP: maximum number of audio function exceeded\n",
++			entity_node);
+ 		return -EINVAL;
+ 	}
+ 
+-	hide->hide_reside_function_num = nval;
++	hide->hide_reside_function_num = num_reports;
+ 	fwnode_property_read_u32_array(entity_node,
+-				       "mipi-sdca-hide-related-audio-function-list", af_list, nval);
+-
+-	nval = fwnode_property_count_u8(function_node, "mipi-sdca-hid-descriptor");
+-	if (nval)
+-		fwnode_property_read_u8_array(function_node, "mipi-sdca-hid-descriptor",
+-					      (u8 *)&hide->hid_desc, nval);
+-
+-	if (hide->hid_desc.bNumDescriptors) {
+-		nval = fwnode_property_count_u8(function_node, "mipi-sdca-report-descriptor");
+-		if (nval) {
+-			report_desc = devm_kzalloc(dev, nval, GFP_KERNEL);
+-			if (!report_desc)
+-				return -ENOMEM;
+-			hide->hid_report_desc = report_desc;
+-			fwnode_property_read_u8_array(function_node, "mipi-sdca-report-descriptor",
+-						      report_desc, nval);
+-
+-			/* add HID device */
+-			ret = sdca_add_hid_device(dev, sdw, entity);
+-			if (ret) {
+-				dev_err(dev, "%pfwP: failed to add HID device: %d\n", entity_node, ret);
+-				return ret;
+-			}
+-		}
+-	}
++				       "mipi-sdca-hide-related-audio-function-list",
++				       hide->af_number_list, num_reports);
+ 
+ 	return 0;
+ }
+@@ -1475,8 +1461,7 @@ static int find_sdca_entity_xu(struct device *dev,
+ 	return 0;
+ }
+ 
+-static int find_sdca_entity(struct device *dev, struct sdw_slave *sdw,
+-			    struct sdca_function_data *function,
++static int find_sdca_entity(struct device *dev, struct sdca_function_data *function,
+ 			    struct fwnode_handle *function_node,
+ 			    struct fwnode_handle *entity_node,
+ 			    struct sdca_entity *entity)
+@@ -1528,8 +1513,7 @@ static int find_sdca_entity(struct device *dev, struct sdw_slave *sdw,
+ 		ret = find_sdca_entity_ge(dev, entity_node, entity);
+ 		break;
+ 	case SDCA_ENTITY_TYPE_HIDE:
+-		ret = find_sdca_entity_hide(dev, sdw, function_node,
+-					    entity_node, entity);
++		ret = find_sdca_entity_hide(dev, entity_node, entity);
+ 		break;
+ 	default:
+ 		break;
+@@ -1544,8 +1528,7 @@ static int find_sdca_entity(struct device *dev, struct sdw_slave *sdw,
+ 	return 0;
+ }
+ 
+-static int find_sdca_entities(struct device *dev, struct sdw_slave *sdw,
+-			      struct fwnode_handle *function_node,
++static int find_sdca_entities(struct device *dev, struct fwnode_handle *function_node,
+ 			      struct sdca_function_data *function)
+ {
+ 	struct sdca_entity *entities;
+@@ -1596,7 +1579,7 @@ static int find_sdca_entities(struct device *dev, struct sdw_slave *sdw,
+ 			return -EINVAL;
+ 		}
+ 
+-		ret = find_sdca_entity(dev, sdw, function, function_node,
++		ret = find_sdca_entity(dev, function, function_node,
+ 				       entity_node, &entities[i]);
+ 		fwnode_handle_put(entity_node);
+ 		if (ret)
+@@ -1619,7 +1602,7 @@ static int find_sdca_entities(struct device *dev, struct sdw_slave *sdw,
+ 	return 0;
+ }
+ 
+-static struct sdca_entity *find_sdca_entity_by_label(struct sdca_function_data *function,
++struct sdca_entity *sdca_find_entity_by_label(struct sdca_function_data *function,
+ 						     const char *entity_label)
+ {
+ 	struct sdca_entity *entity = NULL;
+@@ -1648,6 +1631,7 @@ static struct sdca_entity *find_sdca_entity_by_label(struct sdca_function_data *
+ 
+ 	return NULL;
+ }
++EXPORT_SYMBOL_NS(sdca_find_entity_by_label, "SND_SOC_SDCA");
+ 
+ static struct sdca_entity *find_sdca_entity_by_id(struct sdca_function_data *function,
+ 						  const int id)
+@@ -1688,7 +1672,7 @@ static int find_sdca_entity_connection_iot(struct device *dev,
+ 		return ret;
+ 	}
+ 
+-	clock_entity = find_sdca_entity_by_label(function, clock_label);
++	clock_entity = sdca_find_entity_by_label(function, clock_label);
+ 	if (!clock_entity) {
+ 		dev_err(dev, "%s: failed to find clock with label %s\n",
+ 			entity->label, clock_label);
+@@ -1873,7 +1857,7 @@ static int find_sdca_entity_connection(struct device *dev,
+ 			return ret;
+ 		}
+ 
+-		connected_entity = find_sdca_entity_by_label(function, connected_label);
++		connected_entity = sdca_find_entity_by_label(function, connected_label);
+ 		if (!connected_entity) {
+ 			dev_err(dev, "%s: failed to find entity with label %s\n",
+ 				entity->label, connected_label);
+@@ -2088,8 +2072,7 @@ static int find_sdca_clusters(struct device *dev,
+ 	return 0;
+ }
+ 
+-static int find_sdca_filesets(struct device *dev, struct sdw_slave *sdw,
+-			      struct fwnode_handle *function_node,
++static int find_sdca_filesets(struct device *dev, struct fwnode_handle *function_node,
+ 			      struct sdca_function_data *function)
+ {
+ 	static const int mult_fileset = 3;
+@@ -2171,23 +2154,65 @@ static int find_sdca_filesets(struct device *dev, struct sdw_slave *sdw,
+ 		set->files = files;
+ 	}
+ 
+-	function->fdl_data.swft = sdw->sdca_data.swft;
+ 	function->fdl_data.num_sets = num_sets;
+ 	function->fdl_data.sets = sets;
+ 
+ 	return 0;
+ }
+ 
++static int find_sdca_hid(struct device *dev, struct fwnode_handle *function_node,
++			 struct sdca_function_data *function)
++{
++	int num_desc;
++
++	num_desc = fwnode_property_count_u8(function_node, "mipi-sdca-hid-descriptor");
++	if (!num_desc) {
++		return 0;
++	} else if (num_desc < 0) {
++		dev_err(dev, "%pfwP: failed to read hid descriptor: %d\n",
++			function_node, num_desc);
++		return num_desc;
++	} else if (num_desc > sizeof(function->hid.desc)) {
++		dev_err(dev, "%pfwP: hid descriptor too large: %d\n",
++			function_node, num_desc);
++		return -EINVAL;
++	}
++
++	fwnode_property_read_u8_array(function_node, "mipi-sdca-hid-descriptor",
++				      (u8 *)&function->hid.desc, num_desc);
++
++	if (!function->hid.desc.bNumDescriptors)
++		return 0;
++
++	num_desc = fwnode_property_count_u8(function_node, "mipi-sdca-report-descriptor");
++	if (num_desc <= 0) {
++		dev_err(dev, "%pfwP: failed to read report descriptor: %d\n",
++			function_node, num_desc);
++
++		if (!num_desc)
++			return -EINVAL;
++
++		return num_desc;
++	}
++
++	function->hid.report_desc = devm_kzalloc(dev, num_desc, GFP_KERNEL);
++	if (!function->hid.report_desc)
++		return -ENOMEM;
++
++	fwnode_property_read_u8_array(function_node, "mipi-sdca-report-descriptor",
++				      function->hid.report_desc, num_desc);
++
++	return 0;
++}
++
+ /**
+  * sdca_parse_function - parse ACPI DisCo for a Function
+  * @dev: Pointer to device against which function data will be allocated.
+- * @sdw: SoundWire slave device to be processed.
+  * @function: Pointer to the Function information, to be populated.
+  *
+  * Return: Returns 0 for success.
+  */
+-int sdca_parse_function(struct device *dev, struct sdw_slave *sdw,
+-			struct sdca_function_data *function)
++int sdca_parse_function(struct device *dev, struct sdca_function_data *function)
+ {
+ 	struct fwnode_handle *node = function->desc->node;
+ 	u32 tmp;
+@@ -2213,7 +2238,7 @@ int sdca_parse_function(struct device *dev, struct sdw_slave *sdw,
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = find_sdca_entities(dev, sdw, node, function);
++	ret = find_sdca_entities(dev, node, function);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -2225,10 +2250,20 @@ int sdca_parse_function(struct device *dev, struct sdw_slave *sdw,
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	ret = find_sdca_filesets(dev, sdw, node, function);
++	ret = find_sdca_filesets(dev, node, function);
+ 	if (ret)
+ 		return ret;
+ 
++	switch (function->desc->type) {
++	case SDCA_FUNCTION_TYPE_HID:
++		ret = find_sdca_hid(dev, node, function);
++		if (ret)
++			return ret;
++		break;
++	default:
++		break;
++	}
++
+ 	return 0;
+ }
+ EXPORT_SYMBOL_NS(sdca_parse_function, "SND_SOC_SDCA");
+diff --git a/sound/soc/sdca/sdca_hid.c b/sound/soc/sdca/sdca_hid.c
+index abbd56a..bee1b83 100644
+--- a/sound/soc/sdca/sdca_hid.c
++++ b/sound/soc/sdca/sdca_hid.c
+@@ -14,6 +14,7 @@
+ #include <linux/module.h>
+ #include <linux/property.h>
+ #include <linux/soundwire/sdw.h>
++#include <linux/string.h>
+ #include <linux/types.h>
+ #include <sound/sdca.h>
+ #include <sound/sdca_function.h>
+@@ -23,18 +24,18 @@
+ 
+ static int sdwhid_parse(struct hid_device *hid)
+ {
+-	struct sdca_entity *entity = hid->driver_data;
++	struct sdca_function_data *function = hid->driver_data;
+ 	unsigned int rsize;
+ 	int ret;
+ 
+-	rsize = le16_to_cpu(entity->hide.hid_desc.rpt_desc.wDescriptorLength);
++	rsize = le16_to_cpu(function->hid.desc.rpt_desc.wDescriptorLength);
+ 
+ 	if (!rsize || rsize > HID_MAX_DESCRIPTOR_SIZE) {
+ 		dev_err(&hid->dev, "invalid size of report descriptor (%u)\n", rsize);
+ 		return -EINVAL;
+ 	}
+ 
+-	ret = hid_parse_report(hid, entity->hide.hid_report_desc, rsize);
++	ret = hid_parse_report(hid, function->hid.report_desc, rsize);
+ 
+ 	if (!ret)
+ 		return 0;
+@@ -85,10 +86,16 @@ static const struct hid_ll_driver sdw_hid_driver = {
+ 	.raw_request = sdwhid_raw_request,
+ };
+ 
+-int sdca_add_hid_device(struct device *dev, struct sdw_slave *sdw,
+-			struct sdca_entity *entity)
++/**
++ * sdca_add_hid_device - create a new SDCA HID device
++ * @interrupt: Pointer to the SDCA interrupt information structure.
++ *
++ * Return: Zero on success, and a negative error code on failure.
++ */
++int sdca_add_hid_device(struct sdca_interrupt *interrupt)
+ {
+-	struct sdw_bus *bus = sdw->bus;
++	struct device *dev = interrupt->dev;
++	struct sdca_function_data *function = interrupt->function;
+ 	struct hid_device *hid;
+ 	int ret;
+ 
+@@ -100,16 +107,13 @@ int sdca_add_hid_device(struct device *dev, struct sdw_slave *sdw,
+ 
+ 	hid->dev.parent = dev;
+ 	hid->bus = BUS_SDW;
+-	hid->version = le16_to_cpu(entity->hide.hid_desc.bcdHID);
++	hid->version = le16_to_cpu(function->hid.desc.bcdHID);
+ 
+-	snprintf(hid->name, sizeof(hid->name),
+-		 "HID sdw:%01x:%01x:%04x:%04x:%02x",
+-		 bus->controller_id, bus->link_id, sdw->id.mfg_id,
+-		 sdw->id.part_id, sdw->id.class_id);
++	strscpy(hid->phys, dev_name(dev));
++	snprintf(hid->name, sizeof(hid->name), "SDCA %s:%02x",
++		 function->desc->name, function->desc->adr);
+ 
+-	snprintf(hid->phys, sizeof(hid->phys), "%s", dev->bus->name);
+-
+-	hid->driver_data = entity;
++	hid->driver_data = function;
+ 
+ 	ret = hid_add_device(hid);
+ 	if (ret && ret != -ENODEV) {
+@@ -118,12 +122,24 @@ int sdca_add_hid_device(struct device *dev, struct sdw_slave *sdw,
+ 		return ret;
+ 	}
+ 
+-	entity->hide.hid = hid;
++	interrupt->priv = hid;
+ 
+ 	return 0;
+ }
+ EXPORT_SYMBOL_NS(sdca_add_hid_device, "SND_SOC_SDCA");
+ 
++/**
++ * sdca_destroy_hid_device - destroy the HID device
++ * @interrupt: Pointer to the SDCA interrupt information structure.
++ */
++void sdca_destroy_hid_device(struct sdca_interrupt *interrupt)
++{
++	struct hid_device *hid = interrupt->priv;
++
++	hid_destroy_device(hid);
++}
++EXPORT_SYMBOL_NS(sdca_destroy_hid_device, "SND_SOC_SDCA");
++
+ /**
+  * sdca_hid_process_report - read a HID event from the device and report
+  * @interrupt: Pointer to the SDCA interrupt information structure.
+@@ -133,7 +149,7 @@ EXPORT_SYMBOL_NS(sdca_add_hid_device, "SND_SOC_SDCA");
+ int sdca_hid_process_report(struct sdca_interrupt *interrupt)
+ {
+ 	struct device *dev = interrupt->dev;
+-	struct hid_device *hid = interrupt->entity->hide.hid;
++	struct hid_device *hid = interrupt->priv;
+ 	void *val __free(kfree) = NULL;
+ 	int len, ret;
+ 
+diff --git a/sound/soc/sdca/sdca_interrupts.c b/sound/soc/sdca/sdca_interrupts.c
+index 42fbd3a..7aebc72 100644
+--- a/sound/soc/sdca/sdca_interrupts.c
++++ b/sound/soc/sdca/sdca_interrupts.c
+@@ -487,6 +487,12 @@ int sdca_irq_populate_early(struct device *dev, struct regmap *regmap,
+ 				}
+ 				break;
+ 			case SDCA_CTL_TYPE_S(HIDE, HIDTX_CURRENTOWNER):
++				interrupt->free_priv = sdca_destroy_hid_device;
++
++				ret = sdca_add_hid_device(interrupt);
++				if (ret)
++					return ret;
++
+ 				interrupt->handler = hid_handler;
+ 				break;
+ 			default:

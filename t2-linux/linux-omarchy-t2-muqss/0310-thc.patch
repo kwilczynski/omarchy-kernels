@@ -1,0 +1,83 @@
+diff --git a/drivers/hid/intel-thc-hid/intel-quicki2c/pci-quicki2c.c b/drivers/hid/intel-thc-hid/intel-quicki2c/pci-quicki2c.c
+--- a/drivers/hid/intel-thc-hid/intel-quicki2c/pci-quicki2c.c
++++ b/drivers/hid/intel-thc-hid/intel-quicki2c/pci-quicki2c.c
+@@ -774,6 +774,7 @@ static void quicki2c_remove(struct pci_dev *pdev)
+ 	quicki2c_hid_remove(qcdev);
+ 	quicki2c_dma_deinit(qcdev);
+ 
++	pm_runtime_dont_use_autosuspend(qcdev->dev);
+ 	pm_runtime_get_noresume(qcdev->dev);
+ 
+ 	quicki2c_dev_deinit(qcdev);
+diff --git a/drivers/hid/intel-thc-hid/intel-quickspi/pci-quickspi.c b/drivers/hid/intel-thc-hid/intel-quickspi/pci-quickspi.c
+--- a/drivers/hid/intel-thc-hid/intel-quickspi/pci-quickspi.c
++++ b/drivers/hid/intel-thc-hid/intel-quickspi/pci-quickspi.c
+@@ -713,6 +713,7 @@ static void quickspi_remove(struct pci_dev *pdev)
+ 	quickspi_hid_remove(qsdev);
+ 	quickspi_dma_deinit(qsdev);
+ 
++	pm_runtime_dont_use_autosuspend(qsdev->dev);
+ 	pm_runtime_get_noresume(qsdev->dev);
+ 
+ 	quickspi_dev_deinit(qsdev);
+diff --git a/drivers/hid/intel-thc-hid/intel-quickspi/quickspi-hid.c b/drivers/hid/intel-thc-hid/intel-quickspi/quickspi-hid.c
+--- a/drivers/hid/intel-thc-hid/intel-quickspi/quickspi-hid.c
++++ b/drivers/hid/intel-thc-hid/intel-quickspi/quickspi-hid.c
+@@ -61,7 +61,7 @@ static int quickspi_hid_raw_request(struct hid_device *hid,
+ 
+ 	switch (reqtype) {
+ 	case HID_REQ_GET_REPORT:
+-		ret = quickspi_get_report(qsdev, rtype, reportnum, buf);
++		ret = quickspi_get_report(qsdev, rtype, reportnum, buf, len);
+ 		break;
+ 	case HID_REQ_SET_REPORT:
+ 		ret = quickspi_set_report(qsdev, rtype, reportnum, buf, len);
+diff --git a/drivers/hid/intel-thc-hid/intel-quickspi/quickspi-protocol.c b/drivers/hid/intel-thc-hid/intel-quickspi/quickspi-protocol.c
+--- a/drivers/hid/intel-thc-hid/intel-quickspi/quickspi-protocol.c
++++ b/drivers/hid/intel-thc-hid/intel-quickspi/quickspi-protocol.c
+@@ -342,10 +342,12 @@ int reset_tic(struct quickspi_device *qsdev)
+ }
+ 
+ int quickspi_get_report(struct quickspi_device *qsdev,
+-			u8 report_type, unsigned int report_id, void *buf)
++			u8 report_type, unsigned int report_id, void *buf,
++			u32 buf_len)
+ {
+ 	int rep_type;
+ 	int ret;
++	u32 report_len;
+ 
+ 	if (report_type == HID_INPUT_REPORT) {
+ 		rep_type = GET_INPUT_REPORT;
+@@ -372,9 +374,17 @@ int quickspi_get_report(struct quickspi_device *qsdev,
+ 	}
+ 	qsdev->get_report_cmpl = false;
+ 
+-	memcpy(buf, qsdev->report_buf, qsdev->report_len);
++	/* quickspi_handle_input_data() updates this from IRQ context. */
++	report_len = READ_ONCE(qsdev->report_len);
++	if (report_len > buf_len) {
++		dev_err_once(qsdev->dev, "Get report response too big, %u vs %u\n",
++			     report_len, buf_len);
++		return -EINVAL;
++	}
+ 
+-	return qsdev->report_len;
++	memcpy(buf, qsdev->report_buf, report_len);
++
++	return report_len;
+ }
+ 
+ int quickspi_set_report(struct quickspi_device *qsdev,
+diff --git a/drivers/hid/intel-thc-hid/intel-quickspi/quickspi-protocol.h b/drivers/hid/intel-thc-hid/intel-quickspi/quickspi-protocol.h
+--- a/drivers/hid/intel-thc-hid/intel-quickspi/quickspi-protocol.h
++++ b/drivers/hid/intel-thc-hid/intel-quickspi/quickspi-protocol.h
+@@ -12,7 +12,7 @@ struct quickspi_device;
+ 
+ void quickspi_handle_input_data(struct quickspi_device *qsdev, u32 buf_len);
+ int quickspi_get_report(struct quickspi_device *qsdev, u8 report_type,
+-			unsigned int report_id, void *buf);
++			unsigned int report_id, void *buf, u32 buf_len);
+ int quickspi_set_report(struct quickspi_device *qsdev, u8 report_type,
+ 			unsigned int report_id, void *buf, u32 buf_len);
+ int quickspi_get_report_descriptor(struct quickspi_device *qsdev);

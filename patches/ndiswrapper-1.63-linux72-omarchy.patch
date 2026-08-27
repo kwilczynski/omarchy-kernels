@@ -1,0 +1,34 @@
+--- a/ntoskernel.h	2026-03-22 14:49:46.000000000 +0900
++++ b/ntoskernel.h	2026-08-30 03:55:15.094507564 +0900
+@@ -52,6 +52,16 @@
+ #include <linux/sched/signal.h>
+ #endif
+ 
++/* Kernel 7.2 removed strncpy() ("string: Remove strncpy() from the
++ * kernel", Kees Cook). Every ndiswrapper call copies into a fixed
++ * buffer in statement context, where the NUL-terminating and
++ * zero-padding strscpy_pad() is a safe replacement. crt.c implements
++ * the exact Windows CRT semantics itself and does not use this
++ * macro. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
++#define strncpy(dst, src, n) strscpy_pad(dst, src, n)
++#endif
++
+ #if !defined(CONFIG_X86) && !defined(CONFIG_X86_64)
+ #error "this module is for x86 or x86_64 architectures only"
+ #endif
+--- a/crt.c	2026-03-22 14:49:46.000000000 +0900
++++ b/crt.c	2026-08-30 03:55:15.094698855 +0900
+@@ -289,7 +289,11 @@
+ noregparm char *WIN_FUNC(_win_strncpy,3)
+ 	(char *dst, char *src, SIZE_T n)
+ {
+-	return strncpy(dst, src, n);
++	SIZE_T len = strnlen(src, n);
++
++	memcpy(dst, src, len);
++	memset(dst + len, 0, n - len);
++	return dst;
+ }
+ 
+ noregparm SIZE_T WIN_FUNC(_win_strlen,1)
