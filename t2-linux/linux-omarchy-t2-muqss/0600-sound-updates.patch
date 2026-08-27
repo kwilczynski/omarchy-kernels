@@ -1,0 +1,1798 @@
+diff --git a/include/sound/rawmidi.h b/include/sound/rawmidi.h
+index 6916f71..f076836 100644
+--- a/include/sound/rawmidi.h
++++ b/include/sound/rawmidi.h
+@@ -178,7 +178,8 @@ int snd_rawmidi_proceed(struct snd_rawmidi_substream *substream);
+ int snd_rawmidi_info_select(struct snd_card *card, struct snd_rawmidi_info *info);
+ int snd_rawmidi_kernel_open(struct snd_rawmidi *rmidi, int subdevice,
+ 			    int mode, struct snd_rawmidi_file *rfile);
+-int snd_rawmidi_kernel_release(struct snd_rawmidi_file *rfile);
++int snd_rawmidi_kernel_release_nested(struct snd_rawmidi_file *rfile,
++				      int depth);
+ int snd_rawmidi_output_params(struct snd_rawmidi_substream *substream,
+ 			      struct snd_rawmidi_params *params);
+ int snd_rawmidi_input_params(struct snd_rawmidi_substream *substream,
+@@ -200,4 +201,9 @@ static inline void snd_rawmidi_tie_devices(struct snd_rawmidi *r1,
+ 	r2->tied_device = r1->device + 1;
+ }
+ 
++static inline int snd_rawmidi_kernel_release(struct snd_rawmidi_file *rfile)
++{
++	return snd_rawmidi_kernel_release_nested(rfile, 0);
++}
++
+ #endif /* __SOUND_RAWMIDI_H */
+diff --git a/sound/aoa/soundbus/i2sbus/core.c b/sound/aoa/soundbus/i2sbus/core.c
+index 833c44c..adf123d 100644
+--- a/sound/aoa/soundbus/i2sbus/core.c
++++ b/sound/aoa/soundbus/i2sbus/core.c
+@@ -240,6 +240,8 @@ static int i2sbus_add_dev(struct macio_dev *macio,
+ 	}
+ 	for (i = aoa_resource_i2smmio; i <= aoa_resource_rxdbdma; i++) {
+ 		int irq = irq_of_parse_and_map(np, i);
++		if (!irq)
++			goto err;
+ 		if (request_irq(irq, ints[i], 0, dev->rnames[i], dev))
+ 			goto err;
+ 		dev->interrupts[i] = irq;
+diff --git a/sound/core/control_led.c b/sound/core/control_led.c
+index 8cbacee..3d13bbe 100644
+--- a/sound/core/control_led.c
++++ b/sound/core/control_led.c
+@@ -255,6 +255,8 @@ static int snd_ctl_led_set_id(int card_number, struct snd_ctl_elem_id *id,
+ 	kctl = snd_ctl_find_id(card, id);
+ 	if (!kctl)
+ 		return -ENOENT;
++	if (!kctl->info || !kctl->get)
++		return -EINVAL;
+ 	ioff = snd_ctl_get_ioff(kctl, id);
+ 	vd = &kctl->vd[ioff];
+ 	access = vd->access & SNDRV_CTL_ELEM_ACCESS_LED_MASK;
+diff --git a/sound/core/rawmidi.c b/sound/core/rawmidi.c
+index 4dfd9d5..7084420 100644
+--- a/sound/core/rawmidi.c
++++ b/sound/core/rawmidi.c
+@@ -571,7 +571,6 @@ static void rawmidi_release_priv(struct snd_rawmidi_file *rfile)
+ 	struct snd_rawmidi *rmidi;
+ 
+ 	rmidi = rfile->rmidi;
+-	guard(mutex)(&rmidi->open_mutex);
+ 	if (rfile->input) {
+ 		close_substream(rmidi, rfile->input, 1);
+ 		rfile->input = NULL;
+@@ -585,7 +584,8 @@ static void rawmidi_release_priv(struct snd_rawmidi_file *rfile)
+ }
+ 
+ /* called from sound/core/seq/seq_midi.c */
+-int snd_rawmidi_kernel_release(struct snd_rawmidi_file *rfile)
++int snd_rawmidi_kernel_release_nested(struct snd_rawmidi_file *rfile,
++				      int depth)
+ {
+ 	struct snd_rawmidi *rmidi;
+ 
+@@ -593,11 +593,13 @@ int snd_rawmidi_kernel_release(struct snd_rawmidi_file *rfile)
+ 		return -ENXIO;
+ 
+ 	rmidi = rfile->rmidi;
++	mutex_lock_nested(&rmidi->open_mutex, depth);
+ 	rawmidi_release_priv(rfile);
++	mutex_unlock(&rmidi->open_mutex);
+ 	module_put(rmidi->card->module);
+ 	return 0;
+ }
+-EXPORT_SYMBOL(snd_rawmidi_kernel_release);
++EXPORT_SYMBOL(snd_rawmidi_kernel_release_nested);
+ 
+ static int snd_rawmidi_release(struct inode *inode, struct file *file)
+ {
+@@ -607,7 +609,8 @@ static int snd_rawmidi_release(struct inode *inode, struct file *file)
+ 
+ 	rfile = file->private_data;
+ 	rmidi = rfile->rmidi;
+-	rawmidi_release_priv(rfile);
++	scoped_guard(mutex, &rmidi->open_mutex)
++		rawmidi_release_priv(rfile);
+ 	kfree(rfile);
+ 	module = rmidi->card->module;
+ 	snd_card_file_remove(rmidi->card, file);
+diff --git a/sound/core/ump.c b/sound/core/ump.c
+index 632c13b..4cffed2 100644
+--- a/sound/core/ump.c
++++ b/sound/core/ump.c
+@@ -1183,7 +1183,8 @@ static int snd_ump_legacy_close(struct snd_rawmidi_substream *substream)
+ 		ump->legacy_substreams[dir][group] = NULL;
+ 	if (dir == SNDRV_RAWMIDI_STREAM_OUTPUT) {
+ 		if (!--ump->legacy_out_opens)
+-			snd_rawmidi_kernel_release(&ump->legacy_out_rfile);
++			snd_rawmidi_kernel_release_nested(&ump->legacy_out_rfile,
++							  SINGLE_DEPTH_NESTING);
+ 	}
+ 	return 0;
+ }
+diff --git a/sound/drivers/mtpav.c b/sound/drivers/mtpav.c
+index d31eadf..1ed6d4f 100644
+--- a/sound/drivers/mtpav.c
++++ b/sound/drivers/mtpav.c
+@@ -642,9 +642,7 @@ static void snd_mtpav_free(struct snd_card *card)
+ {
+ 	struct mtpav *crd = card->private_data;
+ 
+-	guard(spinlock_irqsave)(&crd->spinlock);
+-	if (crd->istimer > 0)
+-		snd_mtpav_remove_output_timer(crd);
++	timer_shutdown_sync(&crd->timer);
+ }
+ 
+ /*
+diff --git a/sound/hda/codecs/conexant.c b/sound/hda/codecs/conexant.c
+index 40da283..4645159 100644
+--- a/sound/hda/codecs/conexant.c
++++ b/sound/hda/codecs/conexant.c
+@@ -207,7 +207,7 @@ static void cx_remove(struct hda_codec *codec)
+ 	snd_hda_gen_remove(codec);
+ }
+ 
+-static void cx_process_headset_plugin(struct hda_codec *codec)
++static void cx_process_headset_detect_plug_type(struct hda_codec *codec)
+ {
+ 	unsigned int val;
+ 	unsigned int count = 0;
+@@ -223,11 +223,9 @@ static void cx_process_headset_plugin(struct hda_codec *codec)
+ 		count++;
+ 	} while (count < 3);
+ 	val = snd_hda_codec_read(codec, 0x1c, 0, 0xcb0, 0x0);
+-	if (val & 0x800) {
+-		codec_dbg(codec, "headset plugin, type is CTIA\n");
+-		snd_hda_codec_write(codec, 0x19, 0, AC_VERB_SET_PIN_WIDGET_CONTROL, 0x24);
+-	} else if (val & 0x400) {
+-		codec_dbg(codec, "headset plugin, type is OMTP\n");
++	if (val & 0xc00) {
++		codec_dbg(codec, "headset plugin, type is %s\n",
++			  val & 0x800 ? "CTIA" : "OMTP");
+ 		snd_hda_codec_write(codec, 0x19, 0, AC_VERB_SET_PIN_WIDGET_CONTROL, 0x24);
+ 	} else {
+ 		codec_dbg(codec, "headphone plugin\n");
+@@ -243,10 +241,12 @@ static void cx_update_headset_mic_vref(struct hda_codec *codec, struct hda_jack_
+ 	 * Check hp&mic tag to process headset plugin & plugout.
+ 	 */
+ 	mic_present = snd_hda_codec_read(codec, 0x19, 0, AC_VERB_GET_PIN_SENSE, 0x0);
+-	if (!(mic_present & AC_PINSENSE_PRESENCE)) /* mic plugout */
++	if (!(mic_present & AC_PINSENSE_PRESENCE)) { /* mic plugout */
+ 		snd_hda_codec_write(codec, 0x19, 0, AC_VERB_SET_PIN_WIDGET_CONTROL, 0x20);
+-	else
+-		cx_process_headset_plugin(codec);
++	} else {
++		cx_process_headset_detect_plug_type(codec);
++		snd_hda_codec_write(codec, 0x19, 0, AC_VERB_SET_PIN_WIDGET_CONTROL, 0x24);
++	}
+ }
+ 
+ static int cx_suspend(struct hda_codec *codec)
+diff --git a/sound/hda/codecs/realtek/alc269.c b/sound/hda/codecs/realtek/alc269.c
+index 48a2e7f..c686def 100644
+--- a/sound/hda/codecs/realtek/alc269.c
++++ b/sound/hda/codecs/realtek/alc269.c
+@@ -1364,6 +1364,61 @@ static void alc269_fixup_hp_gpio_led(struct hda_codec *codec,
+ 	alc_fixup_hp_gpio_led(codec, action, 0x08, 0x10);
+ }
+ 
++/*
++ * HP Laptop 15-fd0xxx (SSID 103c:8bb6) Speaker Mute LED fix
++ *
++ * The speaker mute LED is controlled via VREF100 on NID 0x1a.
++ * This pin must remain powered (D0) even during suspend, otherwise
++ * the LED state is lost and the pin defaults to Hi-Z on resume,
++ * causing the LED to stop responding to mute toggles.
++ * Windows keeps this pin powered unconditionally, so matching that
++ * behavior ensures consistent LED operation across suspend/resume.
++ * The mic-mute LED is controlled via GPIO 0 with active-low polarity.
++ */
++static unsigned int hp_8bb6_power_filter(struct hda_codec *codec,
++					 hda_nid_t nid,
++					 unsigned int power_state)
++{
++	if (nid == 0x1a)
++		return AC_PWRST_D0;
++	return snd_hda_gen_path_power_filter(codec, nid, power_state);
++}
++
++static int hp_8bb6_speaker_mute_led_set(struct led_classdev *led_cdev,
++					enum led_brightness brightness)
++{
++	struct hda_codec *codec = dev_to_hda_codec(led_cdev->dev->parent);
++	unsigned int val = (brightness == LED_OFF) ? PIN_IN : PIN_VREF100;
++
++	snd_hda_set_pin_ctl_cache(codec, 0x1a, val);
++	return 0;
++}
++
++static void alc236_fixup_hp_15_fd0xxx(struct hda_codec *codec,
++				      const struct hda_fixup *fix,
++				      int action)
++{
++	struct alc_spec *spec = codec->spec;
++
++	switch (action) {
++	case HDA_FIXUP_ACT_PRE_PROBE:
++		spec->micmute_led_polarity = 1;
++		alc_fixup_hp_gpio_led(codec, action, 0x00, 0x01);
++
++		spec->mute_led_polarity = 0;
++		snd_hda_gen_add_mute_led_cdev(codec, hp_8bb6_speaker_mute_led_set);
++
++		codec->power_filter = hp_8bb6_power_filter;
++		spec->no_shutup_pins = 1;
++		break;
++
++	case HDA_FIXUP_ACT_INIT:
++		if (spec->gen.vmaster_mute.hook)
++			snd_hda_sync_vmaster_hook(&spec->gen.vmaster_mute);
++		break;
++	}
++}
++
+ static void alc285_fixup_hp_gpio_led(struct hda_codec *codec,
+ 				const struct hda_fixup *fix, int action)
+ {
+@@ -4022,6 +4077,7 @@ enum {
+ 	ALC225_FIXUP_DELL_WYSE_MIC_NO_PRESENCE,
+ 	ALC225_FIXUP_S3_POP_NOISE,
+ 	ALC700_FIXUP_INTEL_REFERENCE,
++	ALC700_FIXUP_INTEL_HADES_CANYON,
+ 	ALC274_FIXUP_DELL_BIND_DACS,
+ 	ALC274_FIXUP_DELL_AIO_LINEOUT_VERB,
+ 	ALC298_FIXUP_TPT470_DOCK_FIX,
+@@ -4086,6 +4142,7 @@ enum {
+ 	ALC236_FIXUP_HP_GPIO_LED,
+ 	ALC236_FIXUP_HP_MUTE_LED,
+ 	ALC236_FIXUP_HP_MUTE_LED_MICMUTE_VREF,
++	ALC236_FIXUP_HP_15_FD0XXX,
+ 	ALC236_FIXUP_LENOVO_INV_DMIC,
+ 	ALC298_FIXUP_SAMSUNG_AMP,
+ 	ALC298_FIXUP_SAMSUNG_AMP_V2_2_AMPS,
+@@ -4226,6 +4283,7 @@ enum {
+ 	ALC236_FIXUP_DELL_HP_POP_NOISE,
+ 	ALC274_FIXUP_HP_89E9_GPIO,
+ 	ALC274_FIXUP_HP_VERBS,
++	ALC287_FIXUP_YOGA9_SPEAKER2_TO_DAC1,
+ };
+ 
+ /* A special fixup for Lenovo C940 and Yoga Duet 7;
+@@ -4262,6 +4320,19 @@ static void alc287_fixup_lenovo_yoga_book_9i(struct hda_codec *codec,
+ 	__snd_hda_apply_fixup(codec, id, action, 0);
+ }
+ 
++static void alc700_fixup_intel_hades_canyon(struct hda_codec *codec,
++					    const struct hda_fixup *fix,
++					    int action)
++{
++	/*
++	 * Windows may leave coef 0x1b bit 0x0400 cleared, causing broken
++	 * analog playback after rebooting into Linux.  Restore the bit
++	 * during codec initialization.
++	 */
++	if (action == HDA_FIXUP_ACT_INIT)
++		alc_update_coef_idx(codec, 0x1b, 0x0400, 0x0400);
++}
++
+ static const struct hda_fixup alc269_fixups[] = {
+ 	[ALC233_FIXUP_WUJIE_SPEAKERS] = {
+ 		.type = HDA_FIXUP_PINS,
+@@ -5322,6 +5393,10 @@ static const struct hda_fixup alc269_fixups[] = {
+ 			{}
+ 		}
+ 	},
++	[ALC700_FIXUP_INTEL_HADES_CANYON] = {
++		.type = HDA_FIXUP_FUNC,
++		.v.func = alc700_fixup_intel_hades_canyon,
++	},
+ 	[ALC274_FIXUP_DELL_BIND_DACS] = {
+ 		.type = HDA_FIXUP_FUNC,
+ 		.v.func = alc274_fixup_bind_dacs,
+@@ -5828,6 +5903,10 @@ static const struct hda_fixup alc269_fixups[] = {
+ 		.type = HDA_FIXUP_FUNC,
+ 		.v.func = alc236_fixup_hp_mute_led_micmute_gpio,
+ 	},
++	[ALC236_FIXUP_HP_15_FD0XXX] = {
++		.type = HDA_FIXUP_FUNC,
++		.v.func = alc236_fixup_hp_15_fd0xxx,
++	},
+ 	[ALC236_FIXUP_LENOVO_INV_DMIC] = {
+ 		.type = HDA_FIXUP_FUNC,
+ 		.v.func = alc_fixup_inv_dmic,
+@@ -6898,6 +6977,12 @@ static const struct hda_fixup alc269_fixups[] = {
+ 		.chained = true,
+ 		.chain_id = ALC274_FIXUP_HP_89E9_GPIO,
+ 	},
++	[ALC287_FIXUP_YOGA9_SPEAKER2_TO_DAC1] = {
++		.type = HDA_FIXUP_FUNC,
++		.v.func = alc285_fixup_speaker2_to_dac1,
++		.chained = true,
++		.chain_id = ALC287_FIXUP_TXNW2781_I2C,
++	},
+ };
+ 
+ static const struct hda_quirk alc269_fixup_tbl[] = {
+@@ -7330,6 +7415,7 @@ static const struct hda_quirk alc269_fixup_tbl[] = {
+ 	SND_PCI_QUIRK(0x103c, 0x8b97, "HP", ALC236_FIXUP_HP_MUTE_LED_MICMUTE_VREF),
+ 	SND_PCI_QUIRK(0x103c, 0x8bb3, "HP Slim OMEN", ALC287_FIXUP_CS35L41_I2C_2),
+ 	SND_PCI_QUIRK(0x103c, 0x8bb4, "HP Slim OMEN", ALC287_FIXUP_CS35L41_I2C_2),
++	SND_PCI_QUIRK(0x103c, 0x8bb6, "HP Laptop 15-fd0039nt", ALC236_FIXUP_HP_15_FD0XXX),
+ 	SND_PCI_QUIRK(0x103c, 0x8bbe, "HP Victus 16-r0xxx (MB 8BBE)", ALC245_FIXUP_HP_MUTE_LED_COEFBIT),
+ 	SND_PCI_QUIRK(0x103c, 0x8bc8, "HP Victus 15-fa1xxx", ALC245_FIXUP_HP_MUTE_LED_COEFBIT),
+ 	SND_PCI_QUIRK(0x103c, 0x8bcd, "HP Omen 16-xd0xxx", ALC245_FIXUP_HP_MUTE_LED_V1_COEFBIT),
+@@ -7909,6 +7995,7 @@ static const struct hda_quirk alc269_fixup_tbl[] = {
+ 	SND_PCI_QUIRK(0x17aa, 0x3834, "Lenovo IdeaPad Slim 9i 14ITL5", ALC287_FIXUP_YOGA7_14ITL_SPEAKERS),
+ 	SND_PCI_QUIRK(0x17aa, 0x383d, "Legion Y9000X 2019", ALC285_FIXUP_LEGION_Y9000X_SPEAKERS),
+ 	SND_PCI_QUIRK(0x17aa, 0x3843, "Lenovo Yoga 9i / Yoga Book 9i", ALC287_FIXUP_LENOVO_YOGA_BOOK_9I),
++	SND_PCI_QUIRK(0x17aa, 0x3846, "Lenovo Yoga Pro 9 16IAH10", ALC287_FIXUP_YOGA9_SPEAKER2_TO_DAC1),
+ 	/* Yoga Pro 7 14IMH9 shares PCI SSID 17aa:3847 with Legion 7 16ACHG6;
+ 	 * use codec SSID to distinguish them
+ 	 */
+@@ -7922,6 +8009,7 @@ static const struct hda_quirk alc269_fixup_tbl[] = {
+ 	SND_PCI_QUIRK(0x17aa, 0x3852, "Lenovo Yoga 7 14ITL5", ALC287_FIXUP_YOGA7_14ITL_SPEAKERS),
+ 	SND_PCI_QUIRK(0x17aa, 0x3853, "Lenovo Yoga 7 15ITL5", ALC287_FIXUP_YOGA7_14ITL_SPEAKERS),
+ 	SND_PCI_QUIRK(0x17aa, 0x3855, "Legion 7 16ITHG6", ALC287_FIXUP_LEGION_16ITHG6),
++	SND_PCI_QUIRK(0x17aa, 0x3862, "Lenovo IdeaPad Slim 3 15ABR8", ALC269_FIXUP_LIMIT_INT_MIC_BOOST),
+ 	SND_PCI_QUIRK(0x17aa, 0x3865, "Lenovo 13X", ALC287_FIXUP_CS35L41_I2C_2),
+ 	SND_PCI_QUIRK(0x17aa, 0x3866, "Lenovo 13X", ALC287_FIXUP_CS35L41_I2C_2),
+ 	SND_PCI_QUIRK(0x17aa, 0x3869, "Lenovo Yoga7 14IAL7", ALC287_FIXUP_YOGA9_14IAP7_BASS_SPK_PIN),
+@@ -8055,6 +8143,7 @@ static const struct hda_quirk alc269_fixup_tbl[] = {
+ 	SND_PCI_QUIRK(0x1d05, 0x3031, "TongFang X6AR55xU", ALC2XX_FIXUP_HEADSET_MIC),
+ 	SND_PCI_QUIRK(0x1d05, 0x3033, "TongFang X6SP45xU", ALC2XX_FIXUP_HEADSET_MIC),
+ 	SND_PCI_QUIRK(0x1d05, 0x3034, "TongFang X6KK45xU", ALC2XX_FIXUP_HEADSET_MIC),
++	SND_PCI_QUIRK(0x1d05, 0x30ba, "TongFang XxAF5xxx", ALC2XX_FIXUP_HEADSET_MIC),
+ 	SND_PCI_QUIRK(0x1d17, 0x3288, "Haier Boyue G42", ALC269VC_FIXUP_ACER_VCOPPERBOX_PINS),
+ 	SND_PCI_QUIRK(0x1d72, 0x1602, "RedmiBook", ALC255_FIXUP_XIAOMI_HEADSET_MIC),
+ 	SND_PCI_QUIRK(0x1d72, 0x1701, "XiaomiNotebook Pro", ALC298_FIXUP_DELL1_MIC_NO_PRESENCE),
+@@ -8084,6 +8173,8 @@ static const struct hda_quirk alc269_fixup_tbl[] = {
+ 	SND_PCI_QUIRK(0x2782, 0xa212, "Lunnen Ground 14", ALC269VC_FIXUP_LUNNEN_GROUND_14),
+ 	SND_PCI_QUIRK(0x7017, 0x2014, "Star Labs StarFighter", ALC233_FIXUP_STARLABS_STARFIGHTER),
+ 	SND_PCI_QUIRK(0x8086, 0x2074, "Intel NUC 8", ALC233_FIXUP_INTEL_NUC8_DMIC),
++	SND_PCI_QUIRK(0x8086, 0x2073, "Intel NUC 8 Hades Canyon",
++		      ALC700_FIXUP_INTEL_HADES_CANYON),
+ 	SND_PCI_QUIRK(0x8086, 0x2080, "Intel NUC 8 Rugged", ALC256_FIXUP_INTEL_NUC8_RUGGED),
+ 	SND_PCI_QUIRK(0x8086, 0x2081, "Intel NUC 10", ALC256_FIXUP_INTEL_NUC10),
+ 	SND_PCI_QUIRK(0x8086, 0x3038, "Intel NUC 13", ALC295_FIXUP_CHROME_BOOK),
+diff --git a/sound/pci/ice1712/ice1712.c b/sound/pci/ice1712/ice1712.c
+index 7d1a357..d6bfd8f 100644
+--- a/sound/pci/ice1712/ice1712.c
++++ b/sound/pci/ice1712/ice1712.c
+@@ -2523,7 +2523,7 @@ static int snd_ice1712_probe(struct pci_dev *pci,
+ 			     const struct pci_device_id *pci_id)
+ {
+ 	static int dev;
+-	struct snd_card *card;
++	struct snd_card *card __free(snd_card_unref) = NULL;
+ 	struct snd_ice1712 *ice;
+ 	int pcm_dev = 0, err;
+ 	const struct snd_ice1712_card_info * const *tbl, *c;
+@@ -2535,8 +2535,8 @@ static int snd_ice1712_probe(struct pci_dev *pci,
+ 		return -ENOENT;
+ 	}
+ 
+-	err = snd_card_new(&pci->dev, index[dev], id[dev], THIS_MODULE,
+-			   sizeof(*ice), &card);
++	err = snd_devm_card_new(&pci->dev, index[dev], id[dev], THIS_MODULE,
++				sizeof(*ice), &card);
+ 	if (err < 0)
+ 		return err;
+ 	ice = card->private_data;
+@@ -2640,6 +2640,7 @@ static int snd_ice1712_probe(struct pci_dev *pci,
+ 	if (err < 0)
+ 		return err;
+ 	pci_set_drvdata(pci, card);
++	card = NULL; /* probe succeeded, don't release as error */
+ 	dev++;
+ 	return 0;
+ }
+diff --git a/sound/pci/pcxhr/pcxhr.c b/sound/pci/pcxhr/pcxhr.c
+index 25a6403..60cc072 100644
+--- a/sound/pci/pcxhr/pcxhr.c
++++ b/sound/pci/pcxhr/pcxhr.c
+@@ -1535,6 +1535,13 @@ static int pcxhr_probe(struct pci_dev *pci,
+ 	mgr->pci = pci;
+ 	mgr->irq = -1;
+ 
++	/* ISR lock  */
++	mutex_init(&mgr->lock);
++	mutex_init(&mgr->msg_lock);
++
++	/* init setup mutex*/
++	mutex_init(&mgr->setup_mutex);
++
+ 	if (request_threaded_irq(pci->irq, pcxhr_interrupt,
+ 				 pcxhr_threaded_irq, IRQF_SHARED,
+ 				 KBUILD_MODNAME, mgr)) {
+@@ -1548,13 +1555,6 @@ static int pcxhr_probe(struct pci_dev *pci,
+ 		 "Digigram at 0x%lx & 0x%lx, 0x%lx irq %i",
+ 		 mgr->port[0], mgr->port[1], mgr->port[2], mgr->irq);
+ 
+-	/* ISR lock  */
+-	mutex_init(&mgr->lock);
+-	mutex_init(&mgr->msg_lock);
+-
+-	/* init setup mutex*/
+-	mutex_init(&mgr->setup_mutex);
+-
+ 	mgr->prmh = kmalloc(sizeof(*mgr->prmh) +
+ 			    sizeof(u32) * (PCXHR_SIZE_MAX_LONG_STATUS -
+ 					   PCXHR_SIZE_MAX_STATUS),
+diff --git a/sound/soc/amd/acp/acp3x-es83xx/acp3x-es83xx.c b/sound/soc/amd/acp/acp3x-es83xx/acp3x-es83xx.c
+index 46fff56..3a640e6 100644
+--- a/sound/soc/amd/acp/acp3x-es83xx/acp3x-es83xx.c
++++ b/sound/soc/amd/acp/acp3x-es83xx/acp3x-es83xx.c
+@@ -382,6 +382,14 @@ static const struct dmi_system_id acp3x_es83xx_dmi_table[] = {
+ 		},
+ 		.driver_data = (void *)(ES83XX_ENABLE_DMIC),
+ 	},
++	{
++		.matches = {
++			DMI_EXACT_MATCH(DMI_BOARD_VENDOR, "HUAWEI"),
++			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "HVY-WXX9"),
++			DMI_EXACT_MATCH(DMI_PRODUCT_VERSION, "M1060"),
++		},
++		.driver_data = (void *)(ES83XX_ENABLE_DMIC),
++	},
+ 	{}
+ };
+ 
+diff --git a/sound/soc/amd/acp-config.c b/sound/soc/amd/acp-config.c
+index 88e4230..bcdf7e9 100644
+--- a/sound/soc/amd/acp-config.c
++++ b/sound/soc/amd/acp-config.c
+@@ -54,7 +54,7 @@ static const struct dmi_system_id acp70_acpi_flag_override_table[] = {
+ 	{
+ 		.matches = {
+ 			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK COMPUTER INC"),
+-			DMI_MATCH(DMI_PRODUCT_NAME, "TUF Gaming A14 FA401EA"),
++			DMI_MATCH(DMI_PRODUCT_NAME, "FA401EA"),
+ 		},
+ 	},
+ 	{
+@@ -63,6 +63,13 @@ static const struct dmi_system_id acp70_acpi_flag_override_table[] = {
+ 			DMI_MATCH(DMI_PRODUCT_NAME, "Vivobook 18 M1807GA"),
+ 		},
+ 	},
++	{
++		/* HP OmniBook X Flip 16-cc0xxx */
++		.matches = {
++			DMI_MATCH(DMI_BOARD_VENDOR, "HP"),
++			DMI_MATCH(DMI_BOARD_NAME, "8EA2"),
++		},
++	},
+ 	{}
+ };
+ 
+@@ -202,6 +209,20 @@ static const struct config_entry config_table[] = {
+ 			{}
+ 		},
+ 	},
++	{
++		.flags = FLAG_AMD_LEGACY,
++		.device = ACP_PCI_DEV_ID,
++		.dmi_table = (const struct dmi_system_id []) {
++			{
++				.matches = {
++					DMI_EXACT_MATCH(DMI_BOARD_VENDOR, "HUAWEI"),
++					DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "HVY-WXX9"),
++					DMI_EXACT_MATCH(DMI_PRODUCT_VERSION, "M1060"),
++				},
++			},
++			{}
++		},
++	},
+ };
+ 
+ static int snd_amd_acp_acpi_find_config(struct pci_dev *pci)
+diff --git a/sound/soc/amd/yc/acp6x-mach.c b/sound/soc/amd/yc/acp6x-mach.c
+index ae90e9f..32a8f48 100644
+--- a/sound/soc/amd/yc/acp6x-mach.c
++++ b/sound/soc/amd/yc/acp6x-mach.c
+@@ -570,6 +570,13 @@ static const struct dmi_system_id yc_acp_quirk_table[] = {
+ 			DMI_MATCH(DMI_PRODUCT_NAME, "Alienware m17 R5 AMD"),
+ 		}
+ 	},
++	{
++		.driver_data = &acp6x_card,
++		.matches = {
++			DMI_MATCH(DMI_BOARD_VENDOR, "Alienware"),
++			DMI_MATCH(DMI_PRODUCT_NAME, "Alienware m18 R1 AMD"),
++		}
++	},
+ 	{
+ 		.driver_data = &acp6x_card,
+ 		.matches = {
+@@ -843,6 +850,13 @@ static const struct dmi_system_id yc_acp_quirk_table[] = {
+ 			DMI_MATCH(DMI_PRODUCT_NAME, "Thin A15 B7VE"),
+ 		}
+ 	},
++	{
++		.driver_data = &acp6x_card,
++		.matches = {
++			DMI_MATCH(DMI_BOARD_VENDOR, "Micro-Star International Co., Ltd."),
++			DMI_MATCH(DMI_PRODUCT_NAME, "Thin A15 B7UC"),
++		}
++	},
+ 	{
+ 		.driver_data = &acp6x_card,
+ 		.matches = {
+diff --git a/sound/soc/codecs/max98926.c b/sound/soc/codecs/max98926.c
+index 5305e1f..51a30c1 100644
+--- a/sound/soc/codecs/max98926.c
++++ b/sound/soc/codecs/max98926.c
+@@ -360,7 +360,7 @@ static int max98926_dai_set_fmt(struct snd_soc_dai *codec_dai,
+ 	regmap_write(max98926->regmap,
+ 			MAX98926_FORMAT, MAX98926_DAI_DLY_MASK);
+ 	regmap_update_bits(max98926->regmap, MAX98926_FORMAT,
+-			MAX98926_DAI_BCI_MASK, invert);
++			MAX98926_DAI_BCI_MASK | MAX98926_DAI_WCI_MASK, invert);
+ 	return 0;
+ }
+ 
+diff --git a/sound/soc/codecs/rt712-sdca.c b/sound/soc/codecs/rt712-sdca.c
+index d6353af..f432164 100644
+--- a/sound/soc/codecs/rt712-sdca.c
++++ b/sound/soc/codecs/rt712-sdca.c
+@@ -1780,6 +1780,7 @@ static void rt712_sdca_vb_io_init(struct rt712_sdca_priv *rt712)
+ 	dev_dbg(dev, "%s jack/mic/amp func_status=0x%x, 0x%x, 0x%x\n",
+ 		__func__, jack_func_status, mic_func_status, amp_func_status);
+ 
++	rt712_sdca_index_write(rt712, RT712_VENDOR_REG, RT712_JD_CTL3, 0x7778);
+ 	/* DMIC */
+ 	if ((mic_func_status & FUNCTION_NEEDS_INITIALIZATION) || (!rt712->first_hw_init)) {
+ 		rt712_sdca_index_write(rt712, RT712_VENDOR_HDA_CTL, RT712_DMIC2_FU_IT_FLOAT_CTL, 0x1526);
+diff --git a/sound/soc/codecs/rt712-sdca.h b/sound/soc/codecs/rt712-sdca.h
+index 7ab7d5f..4674028 100644
+--- a/sound/soc/codecs/rt712-sdca.h
++++ b/sound/soc/codecs/rt712-sdca.h
+@@ -74,6 +74,7 @@ struct rt712_dmic_kctrl_priv {
+ #define RT712_JD_PRODUCT_NUM			0x00
+ #define RT712_ANALOG_BIAS_CTL3			0x04
+ #define RT712_JD_CTL1				0x09
++#define RT712_JD_CTL3				0x0b
+ #define RT712_IO_CTL				0x0c
+ #define RT712_LDO2_3_CTL1			0x0e
+ #define RT712_PARA_VERB_CTL			0x1a
+diff --git a/sound/soc/codecs/tac5xx2-sdw.c b/sound/soc/codecs/tac5xx2-sdw.c
+index ace06f5..aa986e9 100644
+--- a/sound/soc/codecs/tac5xx2-sdw.c
++++ b/sound/soc/codecs/tac5xx2-sdw.c
+@@ -55,6 +55,12 @@
+ #define TAC_XU_BYPASS_REG(func, xu)                        \
+ 	SDW_SDCA_CTL(TAC_FUNCTION_ID_##func, TAC_SDCA_ENT_##xu, \
+ 			TAC_SDCA_CTL_XU_BYPASS, 0)
++#define TAC_VOLUME_REG(func, fu, ch) \
++	SDW_SDCA_CTL(TAC_FUNCTION_ID_##func, TAC_SDCA_ENT_##fu, \
++		     TAC_SDCA_CHANNEL_VOLUME, TAC_CHANNEL_##ch)
++#define TAC_GAIN_REG(func, fu, ch) \
++	SDW_SDCA_CTL(TAC_FUNCTION_ID_##func, TAC_SDCA_ENT_##fu, \
++		     TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_##ch)
+ 
+ /* mute registers */
+ #define FU21_L_MUTE_REG  TAC_MUTE_REG(SA, FU21, LEFT)
+@@ -120,9 +126,9 @@ static const DECLARE_TLV_DB_SCALE(tac5xx2_dvc_tlv, -7200, 50, 0);
+ #define TAC_DOUBLE_Q78_TLV(name, func_id, ent_id) \
+ 	SDCA_DOUBLE_Q78_TLV(name, \
+ 			    SDW_SDCA_CTL(TAC_FUNCTION_ID_##func_id, TAC_SDCA_ENT_##ent_id, \
+-					 TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_LEFT), \
++					 TAC_SDCA_CHANNEL_VOLUME, TAC_CHANNEL_LEFT), \
+ 			    SDW_SDCA_CTL(TAC_FUNCTION_ID_##func_id, TAC_SDCA_ENT_##ent_id, \
+-					 TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_RIGHT), \
++					 TAC_SDCA_CHANNEL_VOLUME, TAC_CHANNEL_RIGHT), \
+ 			    TAC_DVC_MIN, TAC_DVC_MAX, TAC_DVC_STEP, tac5xx2_dvc_tlv)
+ 
+ struct tac5xx2_prv {
+@@ -378,37 +384,53 @@ static const struct reg_default tac_reg_default[] = {
+ 	{TAC_REG_SDW(0, 1, 0x71), 0x5},
+ 	{TAC_REG_SDW(0, 1, 0x72), 0x6},
+ 	{TAC_REG_SDW(0, 1, 0x73), 0x7},
++	/* SA */
++	{TAC_MUTE_REG(SA, FU21, LEFT), 0x1},
++	{TAC_MUTE_REG(SA, FU21, RIGHT), 0x1},
++	{TAC_VOLUME_REG(SA, FU21, LEFT), 0x9c00},
++	{TAC_VOLUME_REG(SA, FU21, RIGHT), 0x9c00},
++	{TAC_MUTE_REG(SA, FU23, LEFT), 0x1},
++	{TAC_MUTE_REG(SA, FU23, RIGHT), 0x1},
++	{TAC_GAIN_REG(SA, FU23, LEFT), 0x0},
++	{TAC_GAIN_REG(SA, FU23, RIGHT), 0x0},
++	/* SM */
++	{TAC_USAGE_REG(SM, IT11), 0x0},
++	{TAC_USAGE_REG(SM, OT113), 0x0},
++	{TAC_MUTE_REG(SM, FU113, LEFT), 0x1},
++	{TAC_MUTE_REG(SM, FU113, RIGHT), 0x1},
++	{TAC_GAIN_REG(SM, FU113, LEFT), 0x0},
++	{TAC_GAIN_REG(SM, FU113, RIGHT), 0x0},
++	{TAC_MUTE_REG(SM, FU11,  LEFT), 0x1},
++	{TAC_MUTE_REG(SM, FU11,  RIGHT), 0x1},
++	{TAC_GAIN_REG(SM, FU11,  LEFT), 0x0},
++	{TAC_GAIN_REG(SM, FU11,  RIGHT), 0x0},
++	{TAC_XU_BYPASS_REG(SM, XU12), 0x1},
++	{SDW_SDCA_CTL(TAC_FUNCTION_ID_SM, TAC_SDCA_ENT_CS113,
++		      TAC_SDCA_CTL_CS_SAMP_RATE_IDX, 0), 0x0},
++	/* UAJ */
++	{TAC_USAGE_REG(UAJ, IT33), 0x0},
++	{TAC_USAGE_REG(UAJ, IT41), 0x0},
++	{TAC_USAGE_REG(UAJ, OT36), 0x0},
++	{TAC_USAGE_REG(UAJ, OT45), 0x0},
++	{TAC_MUTE_REG(UAJ, FU41, LEFT), 0x1},
++	{TAC_MUTE_REG(UAJ, FU41, RIGHT), 0x1},
++	{TAC_VOLUME_REG(UAJ, FU41, LEFT), 0x0},
++	{TAC_VOLUME_REG(UAJ, FU41, RIGHT), 0x0},
++	{TAC_MUTE_REG(UAJ, FU36, RIGHT), 0x1},
++	{SDW_SDCA_CTL(TAC_FUNCTION_ID_UAJ, TAC_SDCA_ENT_FU36,
++		      TAC_SDCA_CHANNEL_VOLUME, TAC_JACK_MONO_CS), 0x0},
++	{TAC_XU_BYPASS_REG(UAJ, XU42), 0x0},
++	{SDW_SDCA_CTL(TAC_FUNCTION_ID_UAJ, TAC_SDCA_ENT_CS36,
++		      TAC_SDCA_CTL_CS_SAMP_RATE_IDX, 0), 0x0},
++	{SDW_SDCA_CTL(TAC_FUNCTION_ID_UAJ, TAC_SDCA_ENT_CS41,
++		      TAC_SDCA_CTL_CS_SAMP_RATE_IDX, 0), 0x0},
+ };
+ 
+ static const struct reg_sequence tac_spk_seq[] = {
+ 	REG_SEQ0(SDW_SDCA_CTL(TAC_FUNCTION_ID_SA, TAC_SDCA_ENT_FU21,
+-			      TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_LEFT), 0),
++			      TAC_SDCA_CHANNEL_VOLUME, TAC_CHANNEL_LEFT), 0),
+ 	REG_SEQ0(SDW_SDCA_CTL(TAC_FUNCTION_ID_SA, TAC_SDCA_ENT_FU21,
+-			      TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_RIGHT), 0),
+-	REG_SEQ0(SDW_SDCA_CTL(TAC_FUNCTION_ID_SA, TAC_SDCA_ENT_FU23,
+-			      TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_LEFT), 0),
+-	REG_SEQ0(SDW_SDCA_CTL(TAC_FUNCTION_ID_SA, TAC_SDCA_ENT_FU23,
+-			      TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_RIGHT), 0),
+-};
+-
+-static const struct reg_sequence tac_sm_seq[] = {
+-	REG_SEQ0(SDW_SDCA_CTL(TAC_FUNCTION_ID_SM, TAC_SDCA_ENT_FU113,
+-			      TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_LEFT), 0),
+-	REG_SEQ0(SDW_SDCA_CTL(TAC_FUNCTION_ID_SM, TAC_SDCA_ENT_FU113,
+-			      TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_RIGHT), 0),
+-	REG_SEQ0(SDW_SDCA_CTL(TAC_FUNCTION_ID_SM, TAC_SDCA_ENT_FU11,
+-			      TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_LEFT), 0),
+-	REG_SEQ0(SDW_SDCA_CTL(TAC_FUNCTION_ID_SM, TAC_SDCA_ENT_FU11,
+-			      TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_RIGHT), 0),
+-};
+-
+-static const struct reg_sequence tac_uaj_seq[] = {
+-	REG_SEQ0(SDW_SDCA_CTL(TAC_FUNCTION_ID_UAJ, TAC_SDCA_ENT_FU41,
+-			      TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_LEFT), 0),
+-	REG_SEQ0(SDW_SDCA_CTL(TAC_FUNCTION_ID_UAJ, TAC_SDCA_ENT_FU41,
+-			      TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_RIGHT), 0),
+-	REG_SEQ0(SDW_SDCA_CTL(TAC_FUNCTION_ID_UAJ, TAC_SDCA_ENT_FU36,
+-			      TAC_SDCA_CHANNEL_GAIN, TAC_JACK_MONO_CS), 0),
++			      TAC_SDCA_CHANNEL_VOLUME, TAC_CHANNEL_RIGHT), 0),
+ };
+ 
+ static bool tac_volatile_reg(struct device *dev, unsigned int reg)
+@@ -465,25 +487,25 @@ static int tac_sdca_mbq_size(struct device *dev, unsigned int reg)
+ 	case SDW_SDCA_CTL(TAC_FUNCTION_ID_SA, TAC_SDCA_ENT_FU21,
+ 			  TAC_SDCA_CHANNEL_VOLUME, TAC_CHANNEL_RIGHT):
+ 	case SDW_SDCA_CTL(TAC_FUNCTION_ID_SA, TAC_SDCA_ENT_FU23,
+-			  TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_LEFT):
++			  TAC_SDCA_CHANNEL_VOLUME, TAC_CHANNEL_LEFT):
+ 	case SDW_SDCA_CTL(TAC_FUNCTION_ID_SA, TAC_SDCA_ENT_FU23,
+-			  TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_RIGHT):
++			  TAC_SDCA_CHANNEL_VOLUME, TAC_CHANNEL_RIGHT):
+ 	case SDW_SDCA_CTL(TAC_FUNCTION_ID_SA, TAC_SDCA_ENT_FU23,
+-			  TAC_SDCA_MASTER_GAIN, 0):
++			  TAC_SDCA_CHANNEL_GAIN, 0):
+ 	case SDW_SDCA_CTL(TAC_FUNCTION_ID_SM, TAC_SDCA_ENT_FU113,
+-			  TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_LEFT):
++			  TAC_SDCA_CHANNEL_VOLUME, TAC_CHANNEL_LEFT):
+ 	case SDW_SDCA_CTL(TAC_FUNCTION_ID_SM, TAC_SDCA_ENT_FU113,
+-			  TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_RIGHT):
++			  TAC_SDCA_CHANNEL_VOLUME, TAC_CHANNEL_RIGHT):
+ 	case SDW_SDCA_CTL(TAC_FUNCTION_ID_SM, TAC_SDCA_ENT_FU11,
+-			  TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_LEFT):
++			  TAC_SDCA_CHANNEL_VOLUME, TAC_CHANNEL_LEFT):
+ 	case SDW_SDCA_CTL(TAC_FUNCTION_ID_SM, TAC_SDCA_ENT_FU11,
+-			  TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_RIGHT):
++			  TAC_SDCA_CHANNEL_VOLUME, TAC_CHANNEL_RIGHT):
+ 	case SDW_SDCA_CTL(TAC_FUNCTION_ID_UAJ, TAC_SDCA_ENT_FU41,
+-			  TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_LEFT):
++			  TAC_SDCA_CHANNEL_VOLUME, TAC_CHANNEL_LEFT):
+ 	case SDW_SDCA_CTL(TAC_FUNCTION_ID_UAJ, TAC_SDCA_ENT_FU41,
+-			  TAC_SDCA_CHANNEL_GAIN, TAC_CHANNEL_RIGHT):
++			  TAC_SDCA_CHANNEL_VOLUME, TAC_CHANNEL_RIGHT):
+ 	case SDW_SDCA_CTL(TAC_FUNCTION_ID_UAJ, TAC_SDCA_ENT_FU36,
+-			  TAC_SDCA_CHANNEL_GAIN, TAC_JACK_MONO_CS):
++			  TAC_SDCA_CHANNEL_VOLUME, TAC_JACK_MONO_CS):
+ 		return 2;
+ 
+ 	default:
+@@ -540,7 +562,7 @@ static const struct snd_kcontrol_new tac_uaj_controls[] = {
+ 	TAC_DOUBLE_Q78_TLV("UAJ Playback Volume", UAJ, FU41),
+ 	SDCA_SINGLE_Q78_TLV("UAJ Capture Volume",
+ 			    SDW_SDCA_CTL(TAC_FUNCTION_ID_UAJ, TAC_SDCA_ENT_FU36,
+-					 TAC_SDCA_CHANNEL_GAIN, TAC_JACK_MONO_CS),
++					 TAC_SDCA_CHANNEL_VOLUME, TAC_JACK_MONO_CS),
+ 			   TAC_DVC_MIN, TAC_DVC_MAX, TAC_DVC_STEP, tac5xx2_dvc_tlv),
+ };
+ 
+@@ -1730,16 +1752,6 @@ static int tac_io_init(struct device *dev, struct sdw_slave *slave, bool first)
+ 			goto io_init_err;
+ 		}
+ 		dev_dbg(dev, "smartmic init done\n");
+-
+-		if (first) {
+-			ret = regmap_multi_reg_write(tac_dev->regmap, tac_sm_seq,
+-						     ARRAY_SIZE(tac_sm_seq));
+-			if (ret) {
+-				dev_err(tac_dev->dev,
+-					"init writes failed, err=%d", ret);
+-				goto io_init_err;
+-			}
+-		}
+ 	}
+ 
+ 	if (tac_dev->uaj_func_data) {
+@@ -1752,14 +1764,6 @@ static int tac_io_init(struct device *dev, struct sdw_slave *slave, bool first)
+ 		dev_dbg(dev, "uaj init done\n");
+ 
+ 		if (first) {
+-			ret = regmap_multi_reg_write(tac_dev->regmap, tac_uaj_seq,
+-						     ARRAY_SIZE(tac_uaj_seq));
+-			if (ret) {
+-				dev_err(tac_dev->dev,
+-					"init writes failed, err=%d", ret);
+-				goto io_init_err;
+-			}
+-
+ 			if (tac_dev->hs_jack) {
+ 				ret = tac5xx2_jack_init(tac_dev);
+ 				if (ret) {
+diff --git a/sound/soc/codecs/tac5xx2.h b/sound/soc/codecs/tac5xx2.h
+index eed8e6c..a84c5ca 100644
+--- a/sound/soc/codecs/tac5xx2.h
++++ b/sound/soc/codecs/tac5xx2.h
+@@ -174,14 +174,13 @@
+ #define TAC_SDCA_ENT_SAPU29	0x35
+ 
+ /* Control selector definitions */
+-#define TAC_SDCA_MASTER_GAIN	0x0B
+ #define TAC_SDCA_MASTER_MUTE	0x01
+ #define TAC_SDCA_CHANNEL_MUTE	0x01
+-#define TAC_SDCA_CHANNEL_GAIN	0x02
++#define TAC_SDCA_CHANNEL_VOLUME	0x02
+ #define TAC_SDCA_POSTURENUMBER	0x10
+ #define TAC_SDCA_REQUESTED_PS	0x01
+ #define TAC_SDCA_ACTUAL_PS	0x10
+-#define TAC_SDCA_CHANNEL_VOLUME	0x02
++#define TAC_SDCA_CHANNEL_GAIN	0x0B
+ 
+ /* 2. smart mic function */
+ #define TAC_FUNCTION_ID_SM	0x2
+diff --git a/sound/soc/codecs/tas2783-sdw.c b/sound/soc/codecs/tas2783-sdw.c
+index 3d0b116..571dfcb 100644
+--- a/sound/soc/codecs/tas2783-sdw.c
++++ b/sound/soc/codecs/tas2783-sdw.c
+@@ -1242,6 +1242,7 @@ static int tas_port_prep(struct sdw_slave *slave, struct sdw_prepare_ch *prep_ch
+ 			 enum sdw_port_prep_ops pre_ops)
+ {
+ 	struct device *dev = &slave->dev;
++	struct tas2783_prv *tas_dev = dev_get_drvdata(dev);
+ 	struct sdw_dpn_prop *dpn_prop;
+ 	u32 addr;
+ 	int ret;
+@@ -1253,6 +1254,25 @@ static int tas_port_prep(struct sdw_slave *slave, struct sdw_prepare_ch *prep_ch
+ 	addr = SDW_DPN_PREPARECTRL(prep_ch->num);
+ 	switch (pre_ops) {
+ 	case SDW_OPS_PORT_PRE_PREP:
++		/*
++		 * The Function has to be powered before the port can complete
++		 * channel preparation.  hw_params() does that when a stream is
++		 * set up, but a stream that is only re-prepared - as it is
++		 * after the peripheral lost power in S0i3 - does not go
++		 * through hw_params() again, and the peripheral is back at its
++		 * PS3 reset default.  Power it up here, where it is needed.
++		 */
++		scoped_guard(mutex, &tas_dev->pde_lock)
++			ret = regmap_write(tas_dev->regmap,
++					   SDW_SDCA_CTL(1, TAS2783_SDCA_ENT_PDE23,
++							TAS2783_SDCA_CTL_REQ_POW_STATE, 0),
++					   TAS2783_SDCA_POW_STATE_ON);
++		if (ret) {
++			dev_err(dev, "power up failed for port %d, err=%d\n",
++				prep_ch->num, ret);
++			return ret;
++		}
++
+ 		ret = sdw_write_no_pm(slave, addr, prep_ch->ch_mask);
+ 		if (ret)
+ 			dev_err(dev, "prep failed for port %d, err=%d\n",
+diff --git a/sound/soc/fsl/Kconfig b/sound/soc/fsl/Kconfig
+index 8ae59c0..0494087 100644
+--- a/sound/soc/fsl/Kconfig
++++ b/sound/soc/fsl/Kconfig
+@@ -244,7 +244,7 @@ config SND_SOC_MPC5200_AC97
+ config SND_MPC52xx_SOC_PCM030
+ 	tristate "SoC AC97 Audio support for Phytec pcm030 and WM9712"
+ 	depends on PPC_MPC5200_SIMPLE
+-	select SND_SOC_MPC5200_AC97
++	depends on SND_SOC_MPC5200_AC97
+ 	select SND_SOC_WM9712
+ 	help
+ 	  Say Y if you want to add support for sound on the Phytec pcm030
+@@ -253,7 +253,7 @@ config SND_MPC52xx_SOC_PCM030
+ config SND_MPC52xx_SOC_EFIKA
+ 	tristate "SoC AC97 Audio support for bbplan Efika and STAC9766"
+ 	depends on PPC_EFIKA
+-	select SND_SOC_MPC5200_AC97
++	depends on SND_SOC_MPC5200_AC97
+ 	select SND_SOC_STAC9766
+ 	help
+ 	  Say Y if you want to add support for sound on the Efika.
+diff --git a/sound/soc/fsl/efika-audio-fabric.c b/sound/soc/fsl/efika-audio-fabric.c
+index 4d3266d..e9c728b 100644
+--- a/sound/soc/fsl/efika-audio-fabric.c
++++ b/sound/soc/fsl/efika-audio-fabric.c
+@@ -22,8 +22,6 @@
+ #include <sound/initval.h>
+ #include <sound/soc.h>
+ 
+-#include "mpc5200_dma.h"
+-
+ #define DRV_NAME "efika-audio-fabric"
+ 
+ SND_SOC_DAILINK_DEFS(analog,
+diff --git a/sound/soc/fsl/pcm030-audio-fabric.c b/sound/soc/fsl/pcm030-audio-fabric.c
+index 5542c4e..a7a5dba 100644
+--- a/sound/soc/fsl/pcm030-audio-fabric.c
++++ b/sound/soc/fsl/pcm030-audio-fabric.c
+@@ -13,8 +13,6 @@
+ 
+ #include <sound/soc.h>
+ 
+-#include "mpc5200_dma.h"
+-
+ #define DRV_NAME "pcm030-audio-fabric"
+ 
+ struct pcm030_audio_data {
+diff --git a/sound/soc/qcom/qdsp6/q6apm-dai.c b/sound/soc/qcom/qdsp6/q6apm-dai.c
+index bf1f872..033197b 100644
+--- a/sound/soc/qcom/qdsp6/q6apm-dai.c
++++ b/sound/soc/qcom/qdsp6/q6apm-dai.c
+@@ -216,7 +216,7 @@ static int q6apm_dai_prepare(struct snd_soc_component *component,
+ {
+ 	struct snd_pcm_runtime *runtime = substream->runtime;
+ 	struct q6apm_dai_rtd *prtd = runtime->private_data;
+-	struct audioreach_module_config cfg;
++	struct audioreach_module_config cfg = {};
+ 	struct device *dev = component->dev;
+ 	struct q6apm_dai_data *pdata;
+ 	int ret;
+@@ -814,7 +814,7 @@ static int q6apm_dai_compr_set_params(struct snd_soc_component *component,
+ 	struct snd_compr_runtime *runtime = stream->runtime;
+ 	struct q6apm_dai_rtd *prtd = runtime->private_data;
+ 	struct q6apm_dai_data *pdata;
+-	struct audioreach_module_config cfg;
++	struct audioreach_module_config cfg = {};
+ 	struct snd_codec *codec = &params->codec;
+ 	int dir = stream->direction;
+ 	int ret;
+diff --git a/sound/soc/sdw_utils/soc_sdw_rt_amp.c b/sound/soc/sdw_utils/soc_sdw_rt_amp.c
+index 4e9b08c..81d2cba 100644
+--- a/sound/soc/sdw_utils/soc_sdw_rt_amp.c
++++ b/sound/soc/sdw_utils/soc_sdw_rt_amp.c
+@@ -252,11 +252,13 @@ int asoc_sdw_rt_amp_exit(struct snd_soc_card *card, struct snd_soc_dai_link *dai
+ 	if (ctx->amp_dev1) {
+ 		device_remove_software_node(ctx->amp_dev1);
+ 		put_device(ctx->amp_dev1);
++		ctx->amp_dev1 = NULL;
+ 	}
+ 
+ 	if (ctx->amp_dev2) {
+ 		device_remove_software_node(ctx->amp_dev2);
+ 		put_device(ctx->amp_dev2);
++		ctx->amp_dev2 = NULL;
+ 	}
+ 
+ 	return 0;
+diff --git a/sound/soc/sdw_utils/soc_sdw_utils.c b/sound/soc/sdw_utils/soc_sdw_utils.c
+index d8db8fc..0b17169 100644
+--- a/sound/soc/sdw_utils/soc_sdw_utils.c
++++ b/sound/soc/sdw_utils/soc_sdw_utils.c
+@@ -81,6 +81,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
+ 				/* speaker */
+ 				.direction = {true, false},
+ 				.dai_name = "tac5xx2-aif1",
++				.component_name = "tac5572",
+ 				.dai_type = SOC_SDW_DAI_TYPE_AMP,
+ 				.dailink = {SOC_SDW_AMP_OUT_DAI_ID, SOC_SDW_UNUSED_DAI_ID},
+ 				.init = asoc_sdw_ti_amp_init,
+@@ -94,6 +95,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
+ 				/* mic */
+ 				.direction = {false, true},
+ 				.dai_name = "tac5xx2-aif2",
++				.component_name = "tac5572",
+ 				.dai_type = SOC_SDW_DAI_TYPE_MIC,
+ 				.dailink = {SOC_SDW_UNUSED_DAI_ID, SOC_SDW_DMIC_DAI_ID},
+ 				.rtd_init = asoc_sdw_ti_dmic_rtd_init,
+@@ -102,6 +104,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
+ 				/* UAJ */
+ 				.direction = {true, true},
+ 				.dai_name = "tac5xx2-aif3",
++				.component_name = "tac5572",
+ 				.dai_type = SOC_SDW_DAI_TYPE_JACK,
+ 				.dailink = {SOC_SDW_JACK_OUT_DAI_ID, SOC_SDW_JACK_IN_DAI_ID},
+ 				.controls = generic_jack_controls,
+@@ -122,6 +125,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
+ 				/* speaker with IV sense feedback */
+ 				.direction = {true, true},
+ 				.dai_name = "tac5xx2-aif1",
++				.component_name = "tac5672",
+ 				.dai_type = SOC_SDW_DAI_TYPE_AMP,
+ 				.dailink = {SOC_SDW_AMP_OUT_DAI_ID, SOC_SDW_AMP_IN_DAI_ID},
+ 				.init = asoc_sdw_ti_amp_init,
+@@ -135,6 +139,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
+ 				/* mic */
+ 				.direction = {false, true},
+ 				.dai_name = "tac5xx2-aif2",
++				.component_name = "tac5672",
+ 				.dai_type = SOC_SDW_DAI_TYPE_MIC,
+ 				.dailink = {SOC_SDW_UNUSED_DAI_ID, SOC_SDW_DMIC_DAI_ID},
+ 				.rtd_init = asoc_sdw_ti_dmic_rtd_init,
+@@ -143,6 +148,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
+ 				/* UAJ */
+ 				.direction = {true, true},
+ 				.dai_name = "tac5xx2-aif3",
++				.component_name = "tac5672",
+ 				.dai_type = SOC_SDW_DAI_TYPE_JACK,
+ 				.dailink = {SOC_SDW_JACK_OUT_DAI_ID, SOC_SDW_JACK_IN_DAI_ID},
+ 				.controls = generic_jack_controls,
+@@ -163,6 +169,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
+ 				/* speaker with echo reference feedback */
+ 				.direction = {true, true},
+ 				.dai_name = "tac5xx2-aif1",
++				.component_name = "tac5682",
+ 				.dai_type = SOC_SDW_DAI_TYPE_AMP,
+ 				.dailink = {SOC_SDW_AMP_OUT_DAI_ID, SOC_SDW_AMP_IN_DAI_ID},
+ 				.init = asoc_sdw_ti_amp_init,
+@@ -176,6 +183,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
+ 				/* mic */
+ 				.direction = {false, true},
+ 				.dai_name = "tac5xx2-aif2",
++				.component_name = "tac5682",
+ 				.dai_type = SOC_SDW_DAI_TYPE_MIC,
+ 				.dailink = {SOC_SDW_UNUSED_DAI_ID, SOC_SDW_DMIC_DAI_ID},
+ 				.rtd_init = asoc_sdw_ti_dmic_rtd_init,
+@@ -184,6 +192,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
+ 				/* UAJ */
+ 				.direction = {true, true},
+ 				.dai_name = "tac5xx2-aif3",
++				.component_name = "tac5682",
+ 				.dai_type = SOC_SDW_DAI_TYPE_JACK,
+ 				.dailink = {SOC_SDW_JACK_OUT_DAI_ID, SOC_SDW_JACK_IN_DAI_ID},
+ 				.controls = generic_jack_controls,
+@@ -203,6 +212,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
+ 			{
+ 				.direction = {true, false},
+ 				.dai_name = "tac5xx2-aif1",
++				.component_name = "tas2883",
+ 				.dai_type = SOC_SDW_DAI_TYPE_AMP,
+ 				.dailink = {SOC_SDW_AMP_OUT_DAI_ID, SOC_SDW_UNUSED_DAI_ID},
+ 				.init = asoc_sdw_ti_amp_init,
+@@ -216,6 +226,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
+ 				/* mic */
+ 				.direction = {false, true},
+ 				.dai_name = "tac5xx2-aif2",
++				.component_name = "tas2883",
+ 				.dai_type = SOC_SDW_DAI_TYPE_MIC,
+ 				.dailink = {SOC_SDW_UNUSED_DAI_ID, SOC_SDW_DMIC_DAI_ID},
+ 				.rtd_init = asoc_sdw_ti_dmic_rtd_init,
+@@ -1481,9 +1492,24 @@ int asoc_sdw_trigger(struct snd_pcm_substream *substream, int cmd)
+ 	}
+ 
+ 	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_RESUME:
++		/*
++		 * The peripherals lose their port configuration when the
++		 * controller is power-gated during system suspend, and an
++		 * application that restarts the stream with
++		 * SNDRV_PCM_IOCTL_RESUME - which platforms advertising
++		 * SNDRV_PCM_INFO_RESUME allow - never goes through
++		 * .prepare() again.  Prepare the stream here so that the
++		 * ports are reprogrammed before they are enabled;
++		 * sdw_prepare_stream() reapplies the parameters without
++		 * recomputing them when the stream is disabled.
++		 */
++		ret = sdw_prepare_stream(sdw_stream);
++		if (ret)
++			break;
++		fallthrough;
+ 	case SNDRV_PCM_TRIGGER_START:
+ 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+-	case SNDRV_PCM_TRIGGER_RESUME:
+ 		ret = sdw_enable_stream(sdw_stream);
+ 		break;
+ 
+diff --git a/sound/soc/soc-dapm.c b/sound/soc/soc-dapm.c
+index 4ad126b..646f26b 100644
+--- a/sound/soc/soc-dapm.c
++++ b/sound/soc/soc-dapm.c
+@@ -3608,7 +3608,7 @@ int snd_soc_dapm_put_enum_double(struct snd_kcontrol *kcontrol,
+ 	val = snd_soc_enum_item_to_val(e, item[0]) << e->shift_l;
+ 	mask = e->mask << e->shift_l;
+ 	if (e->shift_l != e->shift_r) {
+-		if (item[1] > e->items)
++		if (item[1] >= e->items)
+ 			return -EINVAL;
+ 		val |= snd_soc_enum_item_to_val(e, item[1]) << e->shift_r;
+ 		mask |= e->mask << e->shift_r;
+diff --git a/sound/soc/tegra/tegra210_admaif.c b/sound/soc/tegra/tegra210_admaif.c
+index 7299c6b..87e898c 100644
+--- a/sound/soc/tegra/tegra210_admaif.c
++++ b/sound/soc/tegra/tegra210_admaif.c
+@@ -26,94 +26,162 @@
+ 
+ #define CH_RX_REG(reg, id) CH_REG(admaif->soc_data->rx_base, reg, id)
+ 
+-#define REG_DEFAULTS(id, rx_ctrl, tx_ctrl, tx_base, rx_base, cif_ctrl)	       \
++#define RX_REG_DEFAULTS(id, rx_ctrl, rx_base, cif_ctrl)			       \
+ 	{ CH_REG(rx_base, TEGRA_ADMAIF_RX_INT_MASK, id), 0x00000001 },	       \
+ 	{ CH_REG(rx_base, TEGRA_ADMAIF_CH_ACIF_RX_CTRL, id), cif_ctrl },     \
+-	{ CH_REG(rx_base, TEGRA_ADMAIF_RX_FIFO_CTRL, id), rx_ctrl },	       \
++	{ CH_REG(rx_base, TEGRA_ADMAIF_RX_FIFO_CTRL, id), rx_ctrl }
++
++#define TX_REG_DEFAULTS(id, tx_ctrl, tx_base, cif_ctrl)			       \
+ 	{ CH_REG(tx_base, TEGRA_ADMAIF_TX_INT_MASK, id), 0x00000001 },	       \
+ 	{ CH_REG(tx_base, TEGRA_ADMAIF_CH_ACIF_TX_CTRL, id), cif_ctrl },     \
+ 	{ CH_REG(tx_base, TEGRA_ADMAIF_TX_FIFO_CTRL, id), tx_ctrl }
+ 
+-#define ADMAIF_REG_DEFAULTS(id, chip)					       \
+-	REG_DEFAULTS((id) - 1,						       \
++#define ADMAIF_RX_REG_DEFAULTS(id, chip)				       \
++	RX_REG_DEFAULTS((id) - 1,					       \
+ 		chip ## _ADMAIF_RX ## id ## _FIFO_CTRL_REG_DEFAULT,	       \
+-		chip ## _ADMAIF_TX ## id ## _FIFO_CTRL_REG_DEFAULT,	       \
+-		chip ## _ADMAIF_TX_BASE,				       \
+ 		chip ## _ADMAIF_RX_BASE,				       \
+ 		chip ## _ADMAIF_CIF_REG_DEFAULT)
+ 
++#define ADMAIF_TX_REG_DEFAULTS(id, chip)				       \
++	TX_REG_DEFAULTS((id) - 1,					       \
++		chip ## _ADMAIF_TX ## id ## _FIFO_CTRL_REG_DEFAULT,	       \
++		chip ## _ADMAIF_TX_BASE,				       \
++		chip ## _ADMAIF_CIF_REG_DEFAULT)
++
+ static const struct reg_default tegra186_admaif_reg_defaults[] = {
+-	{(TEGRA_ADMAIF_GLOBAL_CG_0 + TEGRA186_ADMAIF_GLOBAL_BASE), 0x00000003},
+-	ADMAIF_REG_DEFAULTS(1, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(2, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(3, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(4, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(5, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(6, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(7, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(8, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(9, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(10, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(11, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(12, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(13, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(14, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(15, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(16, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(17, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(18, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(19, TEGRA186),
+-	ADMAIF_REG_DEFAULTS(20, TEGRA186)
++	ADMAIF_RX_REG_DEFAULTS(1, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(2, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(3, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(4, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(5, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(6, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(7, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(8, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(9, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(10, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(11, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(12, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(13, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(14, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(15, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(16, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(17, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(18, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(19, TEGRA186),
++	ADMAIF_RX_REG_DEFAULTS(20, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(1, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(2, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(3, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(4, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(5, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(6, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(7, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(8, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(9, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(10, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(11, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(12, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(13, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(14, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(15, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(16, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(17, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(18, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(19, TEGRA186),
++	ADMAIF_TX_REG_DEFAULTS(20, TEGRA186),
++	{(TEGRA_ADMAIF_GLOBAL_CG_0 + TEGRA186_ADMAIF_GLOBAL_BASE), 0x00000003}
+ };
+ 
+ static const struct reg_default tegra210_admaif_reg_defaults[] = {
+-	{(TEGRA_ADMAIF_GLOBAL_CG_0 + TEGRA210_ADMAIF_GLOBAL_BASE), 0x00000003},
+-	ADMAIF_REG_DEFAULTS(1, TEGRA210),
+-	ADMAIF_REG_DEFAULTS(2, TEGRA210),
+-	ADMAIF_REG_DEFAULTS(3, TEGRA210),
+-	ADMAIF_REG_DEFAULTS(4, TEGRA210),
+-	ADMAIF_REG_DEFAULTS(5, TEGRA210),
+-	ADMAIF_REG_DEFAULTS(6, TEGRA210),
+-	ADMAIF_REG_DEFAULTS(7, TEGRA210),
+-	ADMAIF_REG_DEFAULTS(8, TEGRA210),
+-	ADMAIF_REG_DEFAULTS(9, TEGRA210),
+-	ADMAIF_REG_DEFAULTS(10, TEGRA210)
++	ADMAIF_RX_REG_DEFAULTS(1, TEGRA210),
++	ADMAIF_RX_REG_DEFAULTS(2, TEGRA210),
++	ADMAIF_RX_REG_DEFAULTS(3, TEGRA210),
++	ADMAIF_RX_REG_DEFAULTS(4, TEGRA210),
++	ADMAIF_RX_REG_DEFAULTS(5, TEGRA210),
++	ADMAIF_RX_REG_DEFAULTS(6, TEGRA210),
++	ADMAIF_RX_REG_DEFAULTS(7, TEGRA210),
++	ADMAIF_RX_REG_DEFAULTS(8, TEGRA210),
++	ADMAIF_RX_REG_DEFAULTS(9, TEGRA210),
++	ADMAIF_RX_REG_DEFAULTS(10, TEGRA210),
++	ADMAIF_TX_REG_DEFAULTS(1, TEGRA210),
++	ADMAIF_TX_REG_DEFAULTS(2, TEGRA210),
++	ADMAIF_TX_REG_DEFAULTS(3, TEGRA210),
++	ADMAIF_TX_REG_DEFAULTS(4, TEGRA210),
++	ADMAIF_TX_REG_DEFAULTS(5, TEGRA210),
++	ADMAIF_TX_REG_DEFAULTS(6, TEGRA210),
++	ADMAIF_TX_REG_DEFAULTS(7, TEGRA210),
++	ADMAIF_TX_REG_DEFAULTS(8, TEGRA210),
++	ADMAIF_TX_REG_DEFAULTS(9, TEGRA210),
++	ADMAIF_TX_REG_DEFAULTS(10, TEGRA210),
++	{(TEGRA_ADMAIF_GLOBAL_CG_0 + TEGRA210_ADMAIF_GLOBAL_BASE), 0x00000003}
+ };
+ 
+ static const struct reg_default tegra264_admaif_reg_defaults[] = {
+-	{(TEGRA_ADMAIF_GLOBAL_CG_0 + TEGRA264_ADMAIF_GLOBAL_BASE), 0x00000003},
+-	ADMAIF_REG_DEFAULTS(1, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(2, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(3, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(4, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(5, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(6, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(7, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(8, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(9, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(10, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(11, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(12, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(13, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(14, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(15, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(16, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(17, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(18, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(19, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(20, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(21, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(22, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(23, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(24, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(25, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(26, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(27, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(28, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(29, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(30, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(31, TEGRA264),
+-	ADMAIF_REG_DEFAULTS(32, TEGRA264)
++	ADMAIF_RX_REG_DEFAULTS(1, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(2, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(3, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(4, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(5, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(6, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(7, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(8, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(9, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(10, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(11, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(12, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(13, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(14, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(15, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(16, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(17, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(18, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(19, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(20, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(21, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(22, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(23, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(24, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(25, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(26, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(27, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(28, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(29, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(30, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(31, TEGRA264),
++	ADMAIF_RX_REG_DEFAULTS(32, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(1, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(2, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(3, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(4, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(5, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(6, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(7, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(8, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(9, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(10, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(11, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(12, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(13, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(14, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(15, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(16, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(17, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(18, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(19, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(20, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(21, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(22, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(23, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(24, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(25, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(26, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(27, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(28, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(29, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(30, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(31, TEGRA264),
++	ADMAIF_TX_REG_DEFAULTS(32, TEGRA264),
++	{(TEGRA_ADMAIF_GLOBAL_CG_0 + TEGRA264_ADMAIF_GLOBAL_BASE), 0x00000003}
+ };
+ 
+ static bool tegra_admaif_wr_reg(struct device *dev, unsigned int reg)
+diff --git a/sound/soc/tegra/tegra210_i2s.c b/sound/soc/tegra/tegra210_i2s.c
+index ff8c72f..4716a5a 100644
+--- a/sound/soc/tegra/tegra210_i2s.c
++++ b/sound/soc/tegra/tegra210_i2s.c
+@@ -25,7 +25,7 @@ static const struct reg_default tegra210_i2s_reg_defaults[] = {
+ 	{ TEGRA210_I2S_TX_CIF_CTRL, 0x00007700 },
+ 	{ TEGRA210_I2S_CG, 0x1 },
+ 	{ TEGRA210_I2S_TIMING, 0x0000001f },
+-	{ TEGRA210_I2S_ENABLE, 0x1 },
++	{ TEGRA210_I2S_ENABLE, 0x0 },
+ 	/*
+ 	 * Below update does not have any effect on Tegra186 and Tegra194.
+ 	 * On Tegra210, I2S4 has "i2s4a" and "i2s4b" pins and below update
+@@ -42,7 +42,7 @@ static const struct reg_default tegra264_i2s_reg_defaults[] = {
+ 	{ TEGRA264_I2S_TX_CIF_CTRL, 0x00003f00 },
+ 	{ TEGRA264_I2S_CG, 0x1 },
+ 	{ TEGRA264_I2S_TIMING, 0x0000001f },
+-	{ TEGRA264_I2S_ENABLE, 0x1 },
++	{ TEGRA264_I2S_ENABLE, 0x0 },
+ 	{ TEGRA264_I2S_RX_FIFO_WR_ACCESS_MODE, 0x1 },
+ 	{ TEGRA264_I2S_TX_FIFO_RD_ACCESS_MODE, 0x1 },
+ };
+@@ -201,9 +201,21 @@ static int tegra210_i2s_runtime_resume(struct device *dev)
+ 	}
+ 
+ 	regcache_cache_only(i2s->regmap, false);
+-	regcache_sync(i2s->regmap);
++	err = regcache_sync(i2s->regmap);
++	if (err)
++		goto err;
++
++	err = regmap_write(i2s->regmap, i2s->soc_data->enable_reg, I2S_EN);
++	if (err)
++		goto err;
+ 
+ 	return 0;
++
++err:
++	regcache_cache_only(i2s->regmap, true);
++	clk_disable_unprepare(i2s->clk_i2s);
++
++	return err;
+ }
+ 
+ static void tegra210_i2s_set_data_offset(struct tegra210_i2s *i2s,
+@@ -1133,6 +1145,7 @@ static const struct tegra_i2s_soc_data soc_data_tegra210 = {
+ 	.regmap_conf		= &tegra210_regmap_conf,
+ 	.i2s_cmpnt		= &tegra210_i2s_cmpnt,
+ 	.max_ch			= TEGRA210_I2S_MAX_CHANNEL,
++	.enable_reg		= TEGRA210_I2S_ENABLE,
+ 	.tx_offset		= TEGRA210_I2S_TX_OFFSET,
+ 	.i2s_ctrl_offset	= TEGRA210_I2S_CTRL_OFFSET,
+ 	.fsync_width_mask	= I2S_CTRL_FSYNC_WIDTH_MASK,
+@@ -1144,6 +1157,7 @@ static const struct tegra_i2s_soc_data soc_data_tegra264 = {
+ 	.regmap_conf		= &tegra264_regmap_conf,
+ 	.i2s_cmpnt		= &tegra264_i2s_cmpnt,
+ 	.max_ch			= TEGRA264_I2S_MAX_CHANNEL,
++	.enable_reg		= TEGRA264_I2S_ENABLE,
+ 	.tx_offset		= TEGRA264_I2S_TX_OFFSET,
+ 	.i2s_ctrl_offset	= TEGRA264_I2S_CTRL_OFFSET,
+ 	.fsync_width_mask	= TEGRA264_I2S_CTRL_FSYNC_WIDTH_MASK,
+diff --git a/sound/soc/tegra/tegra210_i2s.h b/sound/soc/tegra/tegra210_i2s.h
+index 42be213..82292f9 100644
+--- a/sound/soc/tegra/tegra210_i2s.h
++++ b/sound/soc/tegra/tegra210_i2s.h
+@@ -150,6 +150,7 @@ struct tegra_i2s_soc_data {
+ 	const struct regmap_config *regmap_conf;
+ 	const struct snd_soc_component_driver *i2s_cmpnt;
+ 	unsigned int max_ch;
++	unsigned int enable_reg;
+ 	unsigned int tx_offset;
+ 	unsigned int i2s_ctrl_offset;
+ 	unsigned int fsync_width_mask;
+diff --git a/sound/soc/tegra/tegra210_mbdrc.c b/sound/soc/tegra/tegra210_mbdrc.c
+index f5d4a93..1d78b4c 100644
+--- a/sound/soc/tegra/tegra210_mbdrc.c
++++ b/sound/soc/tegra/tegra210_mbdrc.c
+@@ -20,33 +20,33 @@
+ #define MBDRC_FILTER_REG(reg, id)					    \
+ 	((reg) + ((id) * TEGRA210_MBDRC_FILTER_PARAM_STRIDE))
+ 
+-#define MBDRC_FILTER_REG_DEFAULTS(id)					    \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_IIR_CFG, id), 0x00000005},	    \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_IN_ATTACK, id), 0x3e48590c},	    \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_IN_RELEASE, id), 0x08414e9f},	    \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_FAST_ATTACK, id), 0x7fffffff},    \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_IN_THRESHOLD, id), 0x06145082},   \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_OUT_THRESHOLD, id), 0x060d379b},  \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_RATIO_1ST, id), 0x0000a000},	    \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_RATIO_2ND, id), 0x00002000},	    \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_RATIO_3RD, id), 0x00000b33},	    \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_RATIO_4TH, id), 0x00000800},	    \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_RATIO_5TH, id), 0x0000019a},	    \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_MAKEUP_GAIN, id), 0x00000002},    \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_INIT_GAIN, id), 0x00066666},	    \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_GAIN_ATTACK, id), 0x00d9ba0e},    \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_GAIN_RELEASE, id), 0x3e48590c},   \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_FAST_RELEASE, id), 0x7ffff26a},   \
+-	{ MBDRC_FILTER_REG(TEGRA210_MBDRC_CFG_RAM_CTRL, id), 0x4000}
++#define MBDRC_FILTER_PARAM_REG_DEFAULTS(reg, val)			    \
++	{ MBDRC_FILTER_REG(reg, 0), val},				    \
++	{ MBDRC_FILTER_REG(reg, 1), val},				    \
++	{ MBDRC_FILTER_REG(reg, 2), val}
+ 
+ static const struct reg_default tegra210_mbdrc_reg_defaults[] = {
+ 	{ TEGRA210_MBDRC_CFG, 0x0030de51},
+ 	{ TEGRA210_MBDRC_CHANNEL_MASK, 0x00000003},
+ 	{ TEGRA210_MBDRC_FAST_FACTOR, 0x30000800},
+ 
+-	MBDRC_FILTER_REG_DEFAULTS(0),
+-	MBDRC_FILTER_REG_DEFAULTS(1),
+-	MBDRC_FILTER_REG_DEFAULTS(2),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_IIR_CFG, 0x00000005),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_IN_ATTACK, 0x3e48590c),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_IN_RELEASE, 0x08414e9f),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_FAST_ATTACK, 0x7fffffff),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_IN_THRESHOLD, 0x06145082),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_OUT_THRESHOLD, 0x060d379b),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_RATIO_1ST, 0x0000a000),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_RATIO_2ND, 0x00002000),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_RATIO_3RD, 0x00000b33),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_RATIO_4TH, 0x00000800),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_RATIO_5TH, 0x0000019a),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_MAKEUP_GAIN, 0x00000002),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_INIT_GAIN, 0x00066666),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_GAIN_ATTACK, 0x00d9ba0e),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_GAIN_RELEASE, 0x3e48590c),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_FAST_RELEASE, 0x7ffff26a),
++	MBDRC_FILTER_PARAM_REG_DEFAULTS(TEGRA210_MBDRC_CFG_RAM_CTRL, 0x4000),
+ };
+ 
+ /* Default MBDRC parameters */
+diff --git a/sound/soc/tegra/tegra210_mixer.c b/sound/soc/tegra/tegra210_mixer.c
+index a697745..9dfba9c 100644
+--- a/sound/soc/tegra/tegra210_mixer.c
++++ b/sound/soc/tegra/tegra210_mixer.c
+@@ -60,7 +60,7 @@ static const struct reg_default tegra210_mixer_reg_defaults[] = {
+ 	{ TEGRA210_MIXER_CG, 0x00000001},
+ 	{ TEGRA210_MIXER_GAIN_CFG_RAM_CTRL, 0x00004000},
+ 	{ TEGRA210_MIXER_PEAKM_RAM_CTRL, 0x00004000},
+-	{ TEGRA210_MIXER_ENABLE, 0x1 },
++	{ TEGRA210_MIXER_ENABLE, 0x0 },
+ };
+ 
+ /* Default gain parameters */
+@@ -86,11 +86,15 @@ static int tegra210_mixer_runtime_suspend(struct device *dev)
+ static int tegra210_mixer_runtime_resume(struct device *dev)
+ {
+ 	struct tegra210_mixer *mixer = dev_get_drvdata(dev);
++	int err;
+ 
+ 	regcache_cache_only(mixer->regmap, false);
+-	regcache_sync(mixer->regmap);
++	err = regcache_sync(mixer->regmap);
++	if (err)
++		return err;
+ 
+-	return 0;
++	return regmap_write(mixer->regmap, TEGRA210_MIXER_ENABLE,
++			    TEGRA210_MIXER_EN);
+ }
+ 
+ static int tegra210_mixer_write_ram(struct tegra210_mixer *mixer,
+diff --git a/sound/usb/card.c b/sound/usb/card.c
+index 6a3b576..8b9d2eb 100644
+--- a/sound/usb/card.c
++++ b/sound/usb/card.c
+@@ -1276,8 +1276,11 @@ static int usb_audio_resume(struct usb_interface *intf)
+ 
+ 	list_for_each_entry(as, &chip->pcm_list, list) {
+ 		err = snd_usb_pcm_resume(as);
+-		if (err < 0)
+-			goto err_out;
++		if (err < 0) {
++			if (!chip->system_suspend)
++				goto err_out;
++			goto out;
++		}
+ 	}
+ 
+ 	/*
+@@ -1286,8 +1289,11 @@ static int usb_audio_resume(struct usb_interface *intf)
+ 	 */
+ 	list_for_each_entry(mixer, &chip->mixer_list, list) {
+ 		err = snd_usb_mixer_resume(mixer);
+-		if (err < 0)
+-			goto err_out;
++		if (err < 0) {
++			if (!chip->system_suspend)
++				goto err_out;
++			goto out;
++		}
+ 	}
+ 
+ 	list_for_each(p, &chip->midi_list) {
+diff --git a/sound/usb/midi.c b/sound/usb/midi.c
+index f899641..8a9bc37 100644
+--- a/sound/usb/midi.c
++++ b/sound/usb/midi.c
+@@ -875,6 +875,8 @@ static void snd_usbmidi_novation_output(struct snd_usb_midi_out_endpoint *ep,
+ 
+ 	if (!ep->ports[0].active)
+ 		return;
++	if (ep->max_transfer < 3)
++		return;
+ 	transfer_buffer = urb->transfer_buffer;
+ 	count = snd_rawmidi_transmit(ep->ports[0].substream,
+ 				     &transfer_buffer[2],
+diff --git a/sound/usb/mixer.c b/sound/usb/mixer.c
+index 5de1821..ecaa8bc 100644
+--- a/sound/usb/mixer.c
++++ b/sound/usb/mixer.c
+@@ -1237,21 +1237,27 @@ static void init_cur_mix_raw(struct usb_mixer_elem_info *cval, int ch, int idx)
+ }
+ 
+ /*
+- * Additional checks for sticky mixers
++ * Additional checks for sticky GET_CUR
+  *
+- * Some devices' volume control mixers are sticky, which accept SET_CUR but
+- * do absolutely nothing.
++ * Some devices' volume control mixers have sticky GET_CUR, which implies either
++ * stubbed SET_CUR or broken GET_CUR. For the former case, the mixer accepts
++ * SET_CUR but do absolutely nothing, so falling back to soft mixer is the only
++ * way to control the volume. For the latter case, the mixer has effective
++ * SET_CUR despite GET_CUR being constant, and the mixer is usable as long as we
++ * always provide mixer value from the ceche.
+  *
+  * Check the return values of GET_CUR with different SET_CUR values. Consider
+- * the mixer as sticky if GET_CUR always returns a constant value.
++ * GET_CUR as sticky if GET_CUR always returns a constant value.
+  *
+- * Some devices have effective SET_CUR despite GET_CUR being constant. Do not
+- * consider the mixer as sticky if a quirk flag indicates that.
++ * Unfortunately, we can't distinguish between stubbed SET_CUR and broken
++ * GET_CUR with simple read-back tests. Disabling the mixer regardless and
++ * forcing userspace to use soft mixer instead can lead to audible distortion at
++ * low volume on some wireless headphones, probably due to their poorly-
++ * performed lossy codec.
+  *
+- * Gate the registration of sticky mixers to prevent confusing userspace, so
+- * that they won't cause ineffective volume control. However, for mixers with
+- * effective SET_CUR but broken GET_CUR, the registration can continue normally
+- * but further GET_CUR requests will be gated.
++ * Instead, mark GET_CUR as broken regardless and only provide mixer value from
++ * the cache. Users may opt into soft mixer in userspace audio stack if they
++ * need it.
+  */
+ static int check_sticky_volume_control(struct usb_mixer_elem_info *cval,
+ 				       int channel, int saved)
+@@ -1271,24 +1277,13 @@ static int check_sticky_volume_control(struct usb_mixer_elem_info *cval,
+ 			return 0;
+ 	}
+ 
+-	if (cval->head.mixer->chip->quirk_flags & QUIRK_FLAG_MIXER_GET_CUR_BROKEN) {
+-		usb_audio_info(cval->head.mixer->chip,
+-			       "%d:%d: broken mixer GET_CUR (%d/%d/%d => %d)\n",
+-			       cval->head.id, mixer_ctrl_intf(cval->head.mixer),
+-			       cval->min, cval->max, cval->res, saved);
+-
+-		cval->get_cur_broken = 1;
+-		return -ENXIO;
+-	}
+-
+-	usb_audio_err(cval->head.mixer->chip,
+-		      "%d:%d: sticky mixer values (%d/%d/%d => %d), disabling\n",
+-		      cval->head.id, mixer_ctrl_intf(cval->head.mixer),
+-		      cval->min, cval->max, cval->res, saved);
+ 	usb_audio_info(cval->head.mixer->chip,
+-		       "check MIXER_GET_CUR_BROKEN if you believe the mixer is non-sticky");
++		       "%d:%d: broken mixer GET_CUR (%d/%d/%d => %d)\n",
++		       cval->head.id, mixer_ctrl_intf(cval->head.mixer),
++		       cval->min, cval->max, cval->res, saved);
+ 
+-	return -ENODEV;
++	cval->get_cur_broken = 1;
++	return -ENXIO;
+ }
+ 
+ /*
+@@ -1385,8 +1380,6 @@ static int get_min_max_with_quirks(struct usb_mixer_elem_info *cval,
+ 				goto no_checks;
+ 
+ 			ret = check_sticky_volume_control(cval, minchn, saved);
+-			if (ret == -ENODEV)
+-				goto sticky;
+ 			if (ret)
+ 				goto no_checks;
+ 
+@@ -1454,34 +1447,15 @@ no_checks:
+ 		}
+ 	}
+ 
+-	return 0;
+-
+-sticky:
+ 	/*
+-	 * It makes no sense to restore the saved value for a sticky mixer,
+-	 * since setting any value is a no-op.
+-	 *
+-	 * However, in some rare cases, SET_CUR is effective despite GET_CUR
+-	 * always returns a constant value. These mixers are not sticky, but
+-	 * there's no way to distinguish them. Without any additional
+-	 * information, the best thing we can do is to set the mixer value to
+-	 * the maximum before bailing out, so that a soft mixer can still reach
+-	 * the maximum hardware volume if the mixer turns out to be non-sticky.
+-	 * Meanwhile, all channels must be synchronized to prevent imbalance
+-	 * volume.
++	 * When GET_CUR is sticky, the saved value is bogus, so mixer values set
++	 * by the sanity checks must be discarded through init_cur_mix_raw().
++	 * After that, we can clear the flag as per QUIRK_FLAG_MIXER_GET_CUR_OK.
+ 	 */
+-	if (!cval->cmask) {
+-		snd_usb_set_cur_mix_value(cval, 0, 0, cval->max);
+-	} else {
+-		idx = 0;
+-		for (i = 0; i < MAX_CHANNELS; i++) {
+-			if (cval->cmask & BIT(i)) {
+-				snd_usb_set_cur_mix_value(cval, i + 1, idx, cval->max);
+-				idx++;
+-			}
+-		}
+-	}
+-	return ret;
++	if (cval->head.mixer->chip->quirk_flags & QUIRK_FLAG_MIXER_GET_CUR_OK)
++		cval->get_cur_broken = 0;
++
++	return 0;
+ }
+ 
+ #define get_min_max(cval, def)	get_min_max_with_quirks(cval, def, NULL)
+diff --git a/sound/usb/mixer_maps.c b/sound/usb/mixer_maps.c
+index ce27fc8..df35269 100644
+--- a/sound/usb/mixer_maps.c
++++ b/sound/usb/mixer_maps.c
+@@ -505,6 +505,19 @@ static const struct usbmix_connector_map gigabyte_b450_connector_map[] = {
+ 	{}
+ };
+ 
++/* Audient iD14 MkI and MkII: FU 12 sits on the monitor mixer branch but is
++ * traced through to the Speaker output terminal, so it is named "Speaker
++ * Playback Volume".  On MkII it controls only 4 of 6 playback channels.  MkI
++ * testing found asymmetric attenuation within the main stereo pair.  Userspace
++ * adopts this control as the stream's hardware volume, causing imbalance below
++ * 0 dB.  Give it a non-standard name so that userspace no longer treats it as
++ * the stream master, while keeping the monitor gain reachable.
++ */
++static const struct usbmix_name_map audient_id14_map[] = {
++	{ 12, "Monitor Mix Playback" },	/* FU, partial coverage */
++	{ 0 }				/* terminator */
++};
++
+ /*
+  * Control map entries
+  */
+@@ -729,6 +742,16 @@ static const struct usbmix_ctl_map usbmix_ctl_maps[] = {
+ 		.id = USB_ID(0X31b2, 0x0022),
+ 		.map = s31b2_0022_map,
+ 	},
++	{
++		/* Audient iD14 MkI */
++		.id = USB_ID(0x2708, 0x0002),
++		.map = audient_id14_map,
++	},
++	{
++		/* Audient iD14 MkII */
++		.id = USB_ID(0x2708, 0x0008),
++		.map = audient_id14_map,
++	},
+ 	{ 0 } /* terminator */
+ };
+ 
+diff --git a/sound/usb/quirks-table.h b/sound/usb/quirks-table.h
+index 71444c2..8e34eb8 100644
+--- a/sound/usb/quirks-table.h
++++ b/sound/usb/quirks-table.h
+@@ -1814,6 +1814,28 @@ YAMAHA_DEVICE(0x7010, "UB99"),
+ 		}
+ 	}
+ },
++{
++	/*
++	 * M-Audio Venom
++	 *
++	 * The AudioControl interface times out on every GET_CUR request,
++	 * which adds around 47 seconds to the card registration and
++	 * freezes the device, blocking streaming.
++	 * Using an explicit composite quirk to skip the mixer entirely.
++	 */
++	USB_DEVICE_VENDOR_SPEC(0x0763, 0x2084),
++	QUIRK_DRIVER_INFO {
++		.vendor_name = "M-Audio",
++		.product_name = "Venom",
++		QUIRK_DATA_COMPOSITE {
++			{ QUIRK_DATA_IGNORE(0) },
++			{ QUIRK_DATA_STANDARD_AUDIO(1) },
++			{ QUIRK_DATA_STANDARD_AUDIO(2) },
++			{ QUIRK_DATA_STANDARD_MIDI(3) },
++			QUIRK_COMPOSITE_END
++		}
++	}
++},
+ 
+ /* Casio devices */
+ {
+diff --git a/sound/usb/quirks.c b/sound/usb/quirks.c
+index 4d2957e..d06bd1f 100644
+--- a/sound/usb/quirks.c
++++ b/sound/usb/quirks.c
+@@ -2215,10 +2215,10 @@ static const struct usb_audio_quirk_flags_table quirk_flags_table[] = {
+ 		   QUIRK_FLAG_FORCE_IFACE_RESET | QUIRK_FLAG_IFACE_DELAY),
+ 	DEVICE_FLG(0x03f0, 0x654a, /* HP 320 FHD Webcam */
+ 		   QUIRK_FLAG_GET_SAMPLE_RATE | QUIRK_FLAG_MIC_RES_16),
+-	DEVICE_FLG(0x040b, 0x0897, /* Weltrend Semiconductor, sold as Redragon H510-PRO Wireless headset */
+-		   QUIRK_FLAG_MIXER_GET_CUR_BROKEN),
+ 	DEVICE_FLG(0x041e, 0x3000, /* Creative SB Extigy */
+ 		   QUIRK_FLAG_IGNORE_CTL_ERROR),
++	DEVICE_FLG(0x041e, 0x324d, /* Creative Sound Blaster Play! 3 */
++		   QUIRK_FLAG_MIXER_PLAYBACK_MIN_MUTE),
+ 	DEVICE_FLG(0x041e, 0x4080, /* Creative Live Cam VF0610 */
+ 		   QUIRK_FLAG_GET_SAMPLE_RATE),
+ 	DEVICE_FLG(0x045e, 0x083c, /* MS USB Link headset */
+@@ -2256,8 +2256,9 @@ static const struct usb_audio_quirk_flags_table quirk_flags_table[] = {
+ 	DEVICE_FLG(0x046d, 0x0a8f, /* Logitech H390 headset */
+ 		   QUIRK_FLAG_CTL_MSG_DELAY_1M |
+ 		   QUIRK_FLAG_MIXER_PLAYBACK_MIN_MUTE),
+-	DEVICE_FLG(0x046d, 0x0af7, /* Logitech PRO X 2 LIGHTSPEED */
+-		   QUIRK_FLAG_MIXER_GET_CUR_BROKEN),
++	DEVICE_FLG(0x046d, 0x0aba, /* Logitech PRO X Wireless */
++		   QUIRK_FLAG_MIXER_GET_CUR_OK |
++		   QUIRK_FLAG_MIXER_PLAYBACK_MIN_MUTE),
+ 	DEVICE_FLG(0x0499, 0x1506, /* Yamaha THR5 */
+ 		   QUIRK_FLAG_GENERIC_IMPLICIT_FB),
+ 	DEVICE_FLG(0x0499, 0x1509, /* Steinberg UR22 */
+@@ -2328,9 +2329,11 @@ static const struct usb_audio_quirk_flags_table quirk_flags_table[] = {
+ 	DEVICE_FLG(0x0763, 0x2031, /* M-Audio Fast Track C600 */
+ 		   QUIRK_FLAG_GENERIC_IMPLICIT_FB),
+ 	DEVICE_FLG(0x0763, 0x2080, /* M-Audio Fast Track Ultra */
+-		   QUIRK_FLAG_MIXER_GET_CUR_BROKEN | QUIRK_FLAG_GENERIC_IMPLICIT_FB),
++		   QUIRK_FLAG_GENERIC_IMPLICIT_FB),
+ 	DEVICE_FLG(0x0763, 0x2081, /* M-Audio Fast Track Ultra */
+-		   QUIRK_FLAG_MIXER_GET_CUR_BROKEN | QUIRK_FLAG_GENERIC_IMPLICIT_FB),
++		   QUIRK_FLAG_GENERIC_IMPLICIT_FB),
++	DEVICE_FLG(0x0763, 0x2084, /* M-Audio Venom */
++		   QUIRK_FLAG_GET_SAMPLE_RATE | QUIRK_FLAG_DISABLE_AUTOSUSPEND),
+ 	DEVICE_FLG(0x07fd, 0x000b, /* MOTU M Series 2nd hardware revision */
+ 		   QUIRK_FLAG_CTL_MSG_DELAY_1M),
+ 	DEVICE_FLG(0x08bb, 0x2702, /* LineX FM Transmitter */
+@@ -2367,8 +2370,6 @@ static const struct usb_audio_quirk_flags_table quirk_flags_table[] = {
+ 		   QUIRK_FLAG_SHARE_MEDIA_DEVICE | QUIRK_FLAG_ALIGN_TRANSFER),
+ 	DEVICE_FLG(0x1038, 0x1294, /* SteelSeries Arctis Pro Wireless */
+ 		   QUIRK_FLAG_MIXER_PLAYBACK_MIN_MUTE),
+-	DEVICE_FLG(0x1038, 0x2232, /* SteelSeries Arctis Nova 5 */
+-		   QUIRK_FLAG_MIXER_GET_CUR_BROKEN),
+ 	DEVICE_FLG(0x1101, 0x0003, /* Audioengine D1 */
+ 		   QUIRK_FLAG_GET_SAMPLE_RATE),
+ 	DEVICE_FLG(0x12d1, 0x3a07, /* HUAWEI USB-C HEADSET */
+@@ -2376,8 +2377,6 @@ static const struct usb_audio_quirk_flags_table quirk_flags_table[] = {
+ 		   QUIRK_FLAG_FORCE_IFACE_RESET | QUIRK_FLAG_IFACE_DELAY),
+ 	DEVICE_FLG(0x1224, 0x2a25, /* Jieli Technology USB PHY 2.0 */
+ 		   QUIRK_FLAG_GET_SAMPLE_RATE | QUIRK_FLAG_MIC_RES_16),
+-	DEVICE_FLG(0x1377, 0x6004, /* Sennheiser MOMENTUM 3 */
+-		   QUIRK_FLAG_MIXER_GET_CUR_BROKEN),
+ 	DEVICE_FLG(0x1395, 0x740a, /* Sennheiser DECT */
+ 		   QUIRK_FLAG_GET_SAMPLE_RATE),
+ 	DEVICE_FLG(0x1397, 0x0507, /* Behringer UMC202HD */
+@@ -2390,6 +2389,9 @@ static const struct usb_audio_quirk_flags_table quirk_flags_table[] = {
+ 		   QUIRK_FLAG_IFB_SILENCE_ON_EMPTY),
+ 	DEVICE_FLG(0x13e5, 0x0001, /* Serato Phono */
+ 		   QUIRK_FLAG_IGNORE_CTL_ERROR),
++	DEVICE_FLG(0x152a, 0x85dd, /* SMSL USB DAC */
++		   QUIRK_FLAG_DSD_RAW | QUIRK_FLAG_DISABLE_AUTOSUSPEND |
++		   QUIRK_FLAG_SKIP_IFACE_SETUP),
+ 	DEVICE_FLG(0x152a, 0x880a, /* NeuralDSP Quad Cortex */
+ 		   0), /* Doesn't have the vendor quirk which would otherwise apply */
+ 	DEVICE_FLG(0x1532, 0x055e, /* Razer Nommo V2 X */
+@@ -2500,8 +2502,6 @@ static const struct usb_audio_quirk_flags_table quirk_flags_table[] = {
+ 		   QUIRK_FLAG_CTL_MSG_DELAY_1M),
+ 	DEVICE_FLG(0x2d99, 0x0026, /* HECATE G2 GAMING HEADSET */
+ 		   QUIRK_FLAG_MIXER_PLAYBACK_MIN_MUTE),
+-	DEVICE_FLG(0x2d99, 0xa024, /* Edifier MF200 */
+-		   QUIRK_FLAG_MIXER_GET_CUR_BROKEN),
+ 	DEVICE_FLG(0x2fc6, 0xf06b, /* MOONDROP Moonriver2 Ti */
+ 		   QUIRK_FLAG_CTL_MSG_DELAY),
+ 	DEVICE_FLG(0x2fc6, 0xf0b5, /* iBasso DC-Elite */
+@@ -2640,7 +2640,7 @@ static const char *const snd_usb_audio_quirk_flag_names[] = {
+ 	QUIRK_STRING_ENTRY(MIXER_PLAYBACK_LINEAR_VOL),
+ 	QUIRK_STRING_ENTRY(MIXER_CAPTURE_LINEAR_VOL),
+ 	QUIRK_STRING_ENTRY(IFB_SILENCE_ON_EMPTY),
+-	QUIRK_STRING_ENTRY(MIXER_GET_CUR_BROKEN),
++	QUIRK_STRING_ENTRY(MIXER_GET_CUR_OK),
+ 	NULL
+ };
+ 
+diff --git a/sound/usb/usbaudio.h b/sound/usb/usbaudio.h
+index e26f909..b1d082f 100644
+--- a/sound/usb/usbaudio.h
++++ b/sound/usb/usbaudio.h
+@@ -243,17 +243,11 @@ extern bool snd_usb_skip_validation;
+  *  from snd_usb_handle_sync_urb. Instead fall through and enqueue a
+  *  packet_info containing only size-0 packets, so the OUT ring keeps
+  *  moving (emits silence). Needed by Behringer Flow 8 (1397:050c).
+- * QUIRK_FLAG_MIXER_GET_CUR_BROKEN
+- *  Some mixers are sticky, which means that setting their current volume is a
+- *  no-op, and reading the current volume returns a constant value. The sticky
+- *  check disables these mixers to prevent confusing userspace. However, some
+- *  devices do have a tunable volume despite the reported current volume being
+- *  constant. As the sticky check can't distinguish between the two categories,
+- *  setting this flag tells that the device should fall into the second
+- *  category when GET_CUR returns a constant value, resulting in the sticky
+- *  check being non-fatal and only disabling GET_CUR instead of the whole mixer.
+- *  The current volume will then be provided by the internal cache that stores
+- *  the last set volume
++ * QUIRK_FLAG_MIXER_GET_CUR_OK
++ *  On some devices, whether their GET_CUR being sticky depends on whether
++ *  hotpluggable components are present. When the hotpluggable components are
++ *  missing on probe, their GET_CUR behavior is classified as broken. Set the
++ *  flag to prevent the heuristics from gating GET_CUR.
+  */
+ 
+ enum {
+@@ -287,8 +281,8 @@ enum {
+ 	QUIRK_TYPE_MIXER_PLAYBACK_LINEAR_VOL	= 27,
+ 	QUIRK_TYPE_MIXER_CAPTURE_LINEAR_VOL	= 28,
+ 	QUIRK_TYPE_IFB_SILENCE_ON_EMPTY		= 29,
+-	QUIRK_TYPE_MIXER_GET_CUR_BROKEN		= 30,
+-/* Please also edit snd_usb_audio_quirk_flag_names */
++	QUIRK_TYPE_MIXER_GET_CUR_OK		= 30,
++/* Please also edit snd_usb_audio_quirk_flag_names and alsa-configuration.rst */
+ };
+ 
+ #define QUIRK_FLAG(x)	BIT_U32(QUIRK_TYPE_ ## x)
+@@ -323,6 +317,6 @@ enum {
+ #define QUIRK_FLAG_MIXER_PLAYBACK_LINEAR_VOL	QUIRK_FLAG(MIXER_PLAYBACK_LINEAR_VOL)
+ #define QUIRK_FLAG_MIXER_CAPTURE_LINEAR_VOL	QUIRK_FLAG(MIXER_CAPTURE_LINEAR_VOL)
+ #define QUIRK_FLAG_IFB_SILENCE_ON_EMPTY		QUIRK_FLAG(IFB_SILENCE_ON_EMPTY)
+-#define QUIRK_FLAG_MIXER_GET_CUR_BROKEN		QUIRK_FLAG(MIXER_GET_CUR_BROKEN)
++#define QUIRK_FLAG_MIXER_GET_CUR_OK		QUIRK_FLAG(MIXER_GET_CUR_OK)
+ 
+ #endif /* __USBAUDIO_H */

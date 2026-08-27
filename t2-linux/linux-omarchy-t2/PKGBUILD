@@ -2,8 +2,8 @@
 # Adopted from the Arch Linux linux package.
 
 pkgbase=linux-omarchy-t2
-pkgver=7.2.1rc1
-pkgrel=1
+pkgver=7.2.2
+pkgrel=5
 pkgdesc='Omarchy Linux (Apple T2 Macs)'
 url='https://omarchy.org'
 arch=(
@@ -46,12 +46,14 @@ source=(
   https://cdn.kernel.org/pub/linux/kernel/v${_major}.x/${_srcname}.tar.{xz,sign}
   ${_rcpatch:+https://cdn.kernel.org/pub/linux/kernel/v${_major}.x/stable-review/${_rcpatch}.xz}
   ${_rcpatch:+https://cdn.kernel.org/pub/linux/kernel/v${_major}.x/stable-review/${_rcpatch}.sign}
-  0010-archlinux-base-7.1.patch{,.sig}
-  1001-Add-t2bce-driver-stack.patch{,.sig}
-  1002-Integrate-t2bce-driver-stack.patch{,.sig}
+  0010-archlinux-base.patch{,.sig}
+  0030-drm-xe-flat-ccs-round-down.patch{,.sig}
+  0031-drm-xe-display-no-stolen-framebuffers.patch{,.sig}
+  1001-add-t2bce-driver-stack.patch{,.sig}
+  1002-integrate-t2bce-driver-stack.patch{,.sig}
   2008-i915-4-lane-quirk-for-mbp15-1.patch{,.sig}
   2009-apple-gmux-allow-switching-to-igpu-at-probe.patch{,.sig}
-  2010-vga_switcheroo-defer-probe-of-display-devices-on-T2.patch{,.sig}
+  2010-vga_switcheroo-defer-probe-of-display-devices-on-t2.patch{,.sig}
   2011-thunderbolt-shift-tb_apple_add_links-to-pci.patch{,.sig}
   2012-thunderbolt-device-links-apple-machines.patch{,.sig}
   2013-thunderbolt-device-links-apple-systems.patch{,.sig}
@@ -62,32 +64,82 @@ source=(
   3003-applesmc-switch-to-acpi_device-from-platform.patch{,.sig}
   3004-applesmc-key-interface-wrappers.patch{,.sig}
   3005-applesmc-basic-mmio-interface-implementation.patch{,.sig}
-  3006-applesmc-fan-support-on-T2-Macs.patch{,.sig}
-  3007-applesmc-Add-iMacPro-to-applesmc_whitelist.patch{,.sig}
+  3006-applesmc-fan-support-on-t2-macs.patch{,.sig}
+  3007-applesmc-add-imacpro-to-applesmc_whitelist.patch{,.sig}
   3008-applesmc-make-applesmc_remove-void.patch{,.sig}
   3009-applesmc-battery-charge-limiter.patch{,.sig}
   3010-applesmc-fix-lockless-cache-validation-data-race.patch{,.sig}
   4001a-asahi-trackpad-infra.patch{,.sig}
   4001b-asahi-trackpad-magicmouse.patch{,.sig}
-  4003-HID-apple-ignore-the-trackpad-on-T2-Macs.patch{,.sig}
-  4004-HID-magicmouse-Add-support-for-trackpads-found-on-T2.patch{,.sig}
-  4005-HID-magicmouse-fix-regression-breaking-support-for-M.patch{,.sig}
-  4006-HID-apple-fix-endianness-of-keyboard-backlight-reports.patch{,.sig}
-  4007-HID-apple-preserve-keyboard-backlight-across-T2-resume.patch{,.sig}
-  4008-HID-apple-use-the-standard-keyboard-backlight-LED-name.patch{,.sig}
-  5001-HID-appletb-kbd-layer-switching-fn-double-press-v3.patch{,.sig}
-  5002-HID-apple-touchbar-avoid-nested-runtime-pm.patch{,.sig}
-  6001-drm-amd-pm-Fix-boot-problems-in-5300.patch{,.sig}
-  7001-drm-i915-fbdev-Discard-BIOS-framebuffers-exceeding-h.patch{,.sig}
-  7002-drm-amdgpu-reset-VI-ASIC-on-MacBookPro15-1.patch{,.sig}
-  7003-platform-x86-apple-gmux-add-MacBookPro15-1-dGPU-powe.patch{,.sig}
-  7004-drm-amdgpu-add-Apple-GMUX-runtime-PM-support.patch{,.sig}
-  7005-ALSA-hda-allow-direct-complete-with-a-powered-off-GP.patch{,.sig}
-  8001-Add-APFS-driver.patch{,.sig}
-  8002-Necessary-modifications-to-build-APFS-with-the-kerne.patch{,.sig}
-  9001-ACPI-x86-Apple-T2-systems-need-early-CPU-offlining.patch{,.sig}
-  9002-x86-cache-restore-AP-cache-state-while-bringing-CPUs.patch{,.sig}
+  4003-hid-apple-ignore-the-trackpad-on-t2-macs.patch{,.sig}
+  4004-hid-magicmouse-add-support-for-trackpads-found-on-t2.patch{,.sig}
+  4005-hid-magicmouse-fix-regression-breaking-support-for-m.patch{,.sig}
+  4006-hid-apple-fix-endianness-of-keyboard-backlight-reports.patch{,.sig}
+  4007-hid-apple-preserve-keyboard-backlight-across-t2-resume.patch{,.sig}
+  4008-hid-apple-use-the-standard-keyboard-backlight-led-name.patch{,.sig}
+  5001-hid-appletb-kbd-layer-switching-fn-double-press-v3.patch{,.sig}
+  5002-hid-apple-touchbar-avoid-nested-runtime-pm.patch{,.sig}
+  6001-drm-amd-pm-fix-boot-problems-in-5300.patch{,.sig}
+  7001-drm-i915-fbdev-discard-bios-framebuffers-exceeding-h.patch{,.sig}
+  7002-drm-amdgpu-reset-vi-asic-on-macbookpro15-1.patch{,.sig}
+  7003-platform-x86-apple-gmux-add-macbookpro15-1-dgpu-powe.patch{,.sig}
+  7004-drm-amdgpu-add-apple-gmux-runtime-pm-support.patch{,.sig}
+  7005-alsa-hda-allow-direct-complete-with-a-powered-off-gp.patch{,.sig}
+  8001-add-apfs-driver.patch{,.sig}
+  8002-necessary-modifications-to-build-apfs-with-the-kerne.patch{,.sig}
+  9001-acpi-x86-apple-t2-systems-need-early-cpu-offlining.patch{,.sig}
+  9002-x86-cache-restore-ap-cache-state-while-bringing-cpus.patch{,.sig}
   0400-btrfs.patch{,.sig}
+  0300-safe-window.patch{,.sig}
+  0310-thc.patch{,.sig}
+  0320-idle.patch{,.sig}
+  0330-sof.patch{,.sig}
+  0340-fbc.patch{,.sig}
+  0350-hybrid-cluster-balancing.patch{,.sig}
+  0351-nohz-idle-core.patch{,.sig}
+  0360-zsmalloc.patch{,.sig}
+  0370-pstate.patch{,.sig}
+  0375-amd-pstate-fixes.patch{,.sig}
+  0376-amd-pstate-epp-cache.patch{,.sig}
+  0380-tlbpull.patch{,.sig}
+  0385-smp-preempt.patch{,.sig}
+  0390-input.patch{,.sig}
+  0410-fuse-eof-zeroing.patch{,.sig}
+  0411-fuse-perf.patch{,.sig}
+  0412-fuse-writethrough-uptodate.patch{,.sig}
+  0413-fuse-background-wakeup.patch{,.sig}
+  0420-gpu-mem-cgroup.patch{,.sig}
+  0430-zstd-bmi2-probe-once.patch{,.sig}
+  0435-af-alg-restrict.patch{,.sig}
+  0440-xe3-peak-bandwidth.patch{,.sig}
+  0450-wireguard-tstamp-type.patch{,.sig}
+  0460-usb4stream-fixes.patch{,.sig}
+  0461-usb4stream-busy-poll.patch{,.sig}
+  0465-typec-cable-altmode-check.patch{,.sig}
+  0500-usb-string-sanitize.patch{,.sig}
+  0510-pci-target-speed-quirk.patch{,.sig}
+  0515-platform-updates.patch{,.sig}
+  0516-amd-pmf-util-unbind-use-after-free.patch{,.sig}
+  0520-xps13-sof-quirk.patch{,.sig}
+  0530-sched-detach-tasks.patch{,.sig}
+  0531-sched-avg-idle.patch{,.sig}
+  0540-mglru-exec-protect.patch{,.sig}
+  0550-ksm-rmap-walk.patch{,.sig}
+  0551-mm-updates.patch{,.sig}
+  0560-futex-wait-multiple.patch{,.sig}
+  0561-futex-wait-multiple-fixes.patch{,.sig}
+  0562-futex-wait-multiple-abi-fixes.patch{,.sig}
+  0570-amd-hdmi-vrr-allm.patch{,.sig}
+  0572-amd-vtem-tmds-links.patch{,.sig}
+  0573-amd-hdmi-frl-default.patch{,.sig}
+  0580-sched-always-inline.patch{,.sig}
+  0590-psr2-early-transport-panels.patch{,.sig}
+  0596-vesa-displayid-dsc-bpp.patch{,.sig}
+  0597-vesa-dsc-passthru-mode-match-fix.patch{,.sig}
+  0600-sound-updates.patch{,.sig}
+  0601-sound-extra.patch{,.sig}
+  0602-aw88399-legion.patch{,.sig}
+  0604-rt766-sdca.patch{,.sig}
 )
 source_x86_64=(config.x86_64)
 validpgpkeys=(
@@ -95,11 +147,13 @@ validpgpkeys=(
   647F28654894E3BD457199BE38DBBDC86092693E  # Greg Kroah-Hartman
   12D27D5D8C8E9BF1AABC7C7C7C64768D3DE334E7  # Krzysztof Wilczynski
 )
-b2sums=('cf5f3d87b96f223034c47c6e5fc972fe52c2556310eb2f064632537b8727231135a8540179fd5d51343738c8a51f51f09c7e8da374324b68551c84a4124bb71b'
+b2sums=('7d3904933ddca054bc085d34c2941d0ed74280c3691716b55369197a0f40dad8d116abaca22fcea71476bd52e9396d80d066d3e859bc945dfdb9e305baff59ab'
         'SKIP'
-        '5099005a74c487f21260f9e05468acf3264c26f22f2a7070066f9b10ad3ccf6e7d3501a4ee88b3f6ecf05dcf30423517690f3153c3032e9de12f05a9fa16ea32'
+        '6d92fb81077232b8cd1ae500b3aabc71434792e750ea6126dc095e50d4278d3e42b3cfdc3c8bc693ea14b109f6adfa3a1ed095187fc5501962fbe8f049f867bc'
         'SKIP'
-        '42fcae4796d0dae7828ec60643a82e1a82127b5af104ea1c4b1debd78868dabae0876ad81512e1b758b95f316809100d8e7de016ff65079bfe7104745c77682b'
+        'ad6961cf5bf5810b0e1d8604b04cc60ae7be4c3a2098ac13188e8219e766901cefde7bf4d06f5b4f7bb3168638fa3d67b1a6ef8039080b2e1567f24675f3df1c'
+        'SKIP'
+        'e403bdc300284c4f0f4302e501b8ccfe5e9af04e73a6070eb6615322f5f40ed6edad53af2ed278741f61a4e3811b92faf1af02f113dbcc2a19bde335a55930d7'
         'SKIP'
         '38efb4ee539486d497e778ea22a26cbd0eacce9780fc04b27579770cea95c464290b4f46c18c6105710296c64ce0201a3fb705265748495fd406ff91e56defdc'
         'SKIP'
@@ -182,15 +236,117 @@ b2sums=('cf5f3d87b96f223034c47c6e5fc972fe52c2556310eb2f064632537b8727231135a8540
         '7451149b2112ad8bd268697d65930df177100b8d052b858bc3891b521182772fa077ba50477326e94df706d1ab7da2985d077fc7ae103d0c85c8f3d40e87e8bc'
         'SKIP'
         'e9fd3630616f96596685415b40a132a7433cff541a1f071d249484c4b841e7882582f6cddce8e8b8c09b36a65f41d102c224597c1037b52b7cc0232d5ac2039d'
+        'SKIP'
+        '5de29d0eb5264e24ab9228bea2ea4b549b3fe37ea67c045df9f83064f11c2f557b9641e772d28db59f8d258418c77435b66ff471c3695043f0f8275d5e7b1685'
+        'SKIP'
+        '674aeac3f3002b86219a80d10a6d14769819342fac3a4753aa284cef3a1b09bd9df50a5600a3cf0d7486ff1dba89995a163264a038808c7504aa2233ed5b7037'
+        'SKIP'
+        'd1007ee452cdf92967ec7055f1f39a3007a69842040e12f5063a1d2f24fd6d1eeaff2357abf96d0e330541a4781f93fecbcb116a4c73371913582eb72b8f9466'
+        'SKIP'
+        '46982b675b2077682f007edd3e59e25859bdc2278837f42d27f16225ff0c812be82c31a886bee721a3753c39cd41a4ae73648e7c7f69179e221de8c5b23ac54a'
+        'SKIP'
+        '25a4ec87d1c789cab55e8ee6357276eb2e87b5e70eba2cd978b2c898e7b79de3fbc8cf5997fcd660998223b6173c98e440c853ad7c3e116f52a48d38622dfb46'
+        'SKIP'
+        '230ffefbb4c7e6153fa262fa0f26f73d17561ec93ad3c8104e2e78eac6286a8564e8bb530eb43a5ae2dc0a7023ac705e5b0a8fbaa76625a210a09869d926e077'
+        'SKIP'
+        'efb7640e390ea0518baed06ae8326c08508f0483212d6ff3bbf3a2aae8d5ad8d9eb2cc0a07a633b653e01569547bbff8ba39db66f1d03abc5a342df7370b0b1b'
+        'SKIP'
+        '20eb818750f65dcd8f1c7706d05b876b5459ca50a089aca88e7731c1dc59a512f367558bc321fdd0192057523b2cfbc05c6a45d89947b07c8ace25696232e9cb'
+        'SKIP'
+        '669b0e7b935aceba4e4318716d733b1c011163b9368200b00265f23bddba9ac03e486e3f5f066b6d157fc770d79918158c4f09eb5823f91bd03f4f87d278e28e'
+        'SKIP'
+        '13beae6f8d23a1f075410f50c09bc94f24f505571af1feb3cee58f732c0d649a9ce5939bc11642c4f3c8dfbd967939b2a0a205220abf06f10d559c4c43a946a3'
+        'SKIP'
+        '2f24f88d8f960148046c36222fdaaadfed2ca88c60240fa1d111430898192ca45aeaa93a3afa24ad02b11c4dc8c3904a92f17c0284396f2f43352ad934a35056'
+        'SKIP'
+        'f6c00ac2400580dffe3605d2693809396e18185f0c59b21b86f1f22a1f8d6529c51e8cc2474bc40f74a96631f415da51521a8b35d5b096e9b9d164c2755fb091'
+        'SKIP'
+        '6aa6ea3690f3e4e145818650537cd110d33720d662af0b3660d95e15a3f91e48c993e31117c0a2fde852f55a77a83e3a50a1a95c0df78a33ae75d43d46a9fe15'
+        'SKIP'
+        'f1a94986b4b3f310fecf981e3619f9787a0c8cb0b4fb3f39e5fe85ee3400e7e50278d41bf5468f65e5bd890358d2aabe28d3e11ee838ccbda2ac7af16be568d9'
+        'SKIP'
+        '287e85297fb74975fc8ae2d7be0dad3ed714d66b68246074ac7fdd7f04dd0b7e7710af06694654af5155e37e3bf4a08470588c7b3d90acda594eaeea30129baa'
+        'SKIP'
+        '553a8f7ace103f6aa530d3d69e3beee8880006aefcee3de57949654f11c71e0678c8afb88f68b69d4d0fd4157e2eed09e394bba6a80502f4181759ad7e147813'
+        'SKIP'
+        'fd487cb02212ffdae5d8beb7d895819377686085b95658dcf597a534b017adcb65dfdf06e0276e7322a46dc28118803b05c246c22e7d3c361f1778ed9e12a3c6'
+        'SKIP'
+        '2137ae016ca26ab7eda80d62e208494c202c382041dcb05b19f30f17bb14f45b9813a42f71e9c36ba83dc7170f832eb12a15a4c8b1bde97cb04b3c71b0a36ba0'
+        'SKIP'
+        '1124c5c3fd5104c886c841ead1ae9afb42683388b640b1a86523dad9919c6bd59a1f78b07ee5a213e0dca77c636a29676af0592d4ed1735ea35f282f6f23e46f'
+        'SKIP'
+        'cd5846a61b32df064f98a38267880b5fba6ba0b74010edd9ddc9abdb20935b7d0fbf21a3eb863ea369a9d61494c44b759fb973b79f8eb8a396873146ebc69850'
+        'SKIP'
+        'ad2cfdc3d8de2193110325395e11015577f26ef1081307bb236ed73fbd109822dd44ea026a57c2e17233e1fb7982e78aa986b71c043f42887e6c5d7f51b84ea9'
+        'SKIP'
+        '2b33b11e48d8dd8d6743f26170fb99eae38541e3665e2448d91cedf729cca7c0278bfba1078ecbe88201eac4407ec5bd0292a97dbab9cfc67e42646712befc1f'
+        'SKIP'
+        '8481f23c33a84d8efb798f4b83f78011f74cd5a3dec428b177d7e600922836c1eec61c4238724038221d8ca2e2cdf20462c5911085da3461aa315f7dd19d96d8'
+        'SKIP'
+        'd50d5a69087a5ba6c416a6391232764c8281a8094645175fdb2cfc1bb011e33335ae4e96d79364681bea61edcb58ba9acb491e08c301d0667481759d0ee1e183'
+        'SKIP'
+        '539b1d0e764f0ace3e572ac49f20a790183155ddc0bcd3a8d040f44c9891dd36b1a0accb8c0288267afbd33e6ceadf6fc3a5e3db40491c695e0c1d3dd64af40c'
+        'SKIP'
+        'f5cae6eabf2066d5deef737a15967d5d11340de34b181f3b3d841023507fc58af2b68926eb04bb342e1adb857165400f862f2b35ffec4204a107b3b22a1571e7'
+        'SKIP'
+        'ab28a1f4f1756b8451840566d8100cb3d0b498b13d006593c72829b9783e94900bae78ab47c576d156e1d08c56602274b3f7d5bd885de17336623b23c3e4f255'
+        'SKIP'
+        '4a4af88fc8a8c37ae6d20b35d19e60a17672569d5489be120edbcc62ab3ba4bbc43b78cd0799b9fd73c84b089364320bcbad6fcb7128c2cb06d15ed984d6fc8c'
+        'SKIP'
+        'c25f2d4655fa81ddc7ab3fa29d19f0f1c3110aaf1274079718965fee3d89e42ae8a08d31cec3c7b6c0739ebe687f0b46e5a387a74414c7dbc1b524db8c775b34'
+        'SKIP'
+        'd7dffb68fd22db7ef41d1ac193dd297fb6150f034f257a44e6cb0a4848dc4a94e328c2e26d5296a72993e2db75d09e3ac46456d337a5bae767fb266082d3cc66'
+        'SKIP'
+        '5d82f32f7c04b084530722b9848254aac289c2a754a10e16821083a871ec14065dd9ee83e72b8e9e8ba2915f3fbaf17b0874df724002eb08a5f4f84d1b6aecd8'
+        'SKIP'
+        '711128ee6516ee4edada5600c90253333be45be235cd34d9acc99210c9009b36e803a6155c9817322852256cb92db83f6eb2b7362b808bd84c795e7009c3cb14'
+        'SKIP'
+        'ad1de51a6dd7d7ca30020ba25c48f6309a3a1576d9a9bfbd5c13b076cd663a5ac2bdd4c2e1e95b914641446de58f2f065c689feeb6d83c73f3a33b59bb3f88c7'
+        'SKIP'
+        '57e649817bd7f07c17850a214e5b8808387d05670b8c67d8589bc5c4b5f8d46a75bcdf8365eba6b90d31972a9c927c6286b08e27a997ff3575af3ee4298c913f'
+        'SKIP'
+        '31abdd15ae3f9709d6912c90319a0b62d8380e1ae1169575c0e8e419f8ce264a7cf7c72558a85719cd5a1cae7341007adb3e3936268999ebd5215c2ed288f22c'
+        'SKIP'
+        '3090f7c8ce458fffb2fea339daa1a665a7fe0924c3f13d629d50a01839eea1ca958c631769222348692413400aaaf4e25419c311928e91642f8e857029ed882f'
+        'SKIP'
+        'aca0527f5630671a319e7ecff958a3a64f29df73b427c67c1d29763cc1801fa82e96761c3a61c22d936913943a49261da64d490a0752ba9ffc8e0c1d92f99835'
+        'SKIP'
+        '803736a8e836560b3e50b7c0c8cf1f9ebb16b8642cc7bc6e5167d19037bd757431565fe4581776e50eb2693c49f778a24fecff41a553612e7e498f755b8f2f67'
+        'SKIP'
+        '4bc132d9c34deaae9b13d08dcff8ea83aa8f9ce4398531e0e0a80df30da3808815f3a587fe5627f6553b8e9c2aea6cc1749b752250a91c94f1cf8ba4f3eb5e8d'
+        'SKIP'
+        'abad21745d0f8efacb3acc70de0d111778c8ffd8f936f2b75502ebd979246eba1c2bc09bf4413f82e39d64410be81d0072233945300e5ecf9e20c94068fe8395'
+        'SKIP'
+        'b3fda8653279febce4aecac7cad29cc678a9ed939e864b3ecc7b2baaa360d71820361df783f3de887fddc3809ebb1b8dd7870cf752ec29423bad33b848054a3c'
+        'SKIP'
+        'ca6810b6e53af183bc17a370e8eebb9628757d902988f02a666c037a8881fdb36b6b3f8f73b19884ce48a809545f2f2d40006374ed7be3727f5ef0f907133142'
+        'SKIP'
+        '3dcfb880b848a515f5619a6889f44e13eaa5597c1ea8b2fb7f926476849ea07313ea7be7349f5022849b59c021e8750ef0c4039514e2ac86c0645609b9699aed'
+        'SKIP'
+        'b4bf4c4c0672bad91d7f8d309e741104918dd8ee8688a00d600379eba5828d1b8157953377c73d0b58050b4ff888c43013ede4e9c959be8d9c028a6143bf58ed'
+        'SKIP'
+        '6f3f1d5742bb9cfb45b4bfa06d9b062b3f6c871584879f07c5b0d92d8290db0f35a21ab7f5232925d9ed7682835239a791f2876c3a33fcdc1f74a98b5db08e5d'
+        'SKIP'
+        '2ca91c12c4939132fd20e7729c1b930a26147492fc7aef7310cd9add137a6fc5c54ff1d8417fc831d44dc8439a82a73d7f87ee75a3942d24465e3c2c0059122e'
+        'SKIP'
+        '1621dce79040e6d3d5e445b21d2f775759d64ee8988a8d526e6c1626d8d1a45572f85760dafd35717ae6d63e2b45a2511f03fd0a47856a1ef038dad6c9bb5a54'
+        'SKIP'
+        '89239b2bb200d6c125501ee599d68719f8c7112d768908b87094d8dbf28752f938de399b2368d66295b258f40501e63359d22175cacb683ebc7dc4389cf06eb8'
+        'SKIP'
+        'bd102826d4f21172bf2d09fb406d6007a18e5ff42493f72c5104ea548d5c8b6ff165b5c45f0bfa7a1bf18d5d4ae589f8df56ed65f716356b330474388d18329a'
+        'SKIP'
+        '16bdc2e4f75113f342b3d0e530ef5bc23eefde961c97a4704ea5410931404496db2794af866e6e180490785ea6d3735c9e28d19b7b72b87b6c362c5eb4593ec9'
         'SKIP')
-b2sums_x86_64=('44ca49a7fda592e16834fefd208f1811f933727dab1c8d6f521ecdf01511e3c84b6e85c8a9da0ae93753d2a7da7cfeacda2cfd0b007f64cf1c8de4a4acfd7c1b')
+b2sums_x86_64=('de2aa3e146a55f3077ad46edcd026d49ec0ae2284fe0ec4e36879aef69e14d3545f0c05bd830c83020ad45779094e90ef93b9264f34f1b529ef631aa32ff7772')
 
 # https://www.kernel.org/pub/linux/kernel/v7.x/sha256sums.asc
-sha256sums=('f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3'
+sha256sums=('7d0e7ce14f98c43efe880cffbf354a59be45928fdf7170d7333c374ae91c0d83'
             'SKIP'
-            '2707f832541d5d49d26f352e2ec169658e9e0d90117a8420408d37f378cd5c5a'
+            '95f3e9209629044028373af987dc0e270a5a15acb8c8e49c5f05057220c75fe2'
             'SKIP'
-            '29454b640531021cced21d1b715b69413cab1e0a5c8f3b76d3f4e1921cf063d8'
+            'b296557092b71407c7d18bc9fb9236ae6166e17e17cc94088ff7e2bbb97acaad'
+            'SKIP'
+            '1e2fddb2e0c5d184a2e8c774886cf9be2f2f292e4f05832b50e5b49c48a7bacc'
             'SKIP'
             '7d050bd960376142f8de7d9ca7f38ae9f50f99e697a8de6da22d3759fbc96731'
             'SKIP'
@@ -273,7 +429,107 @@ sha256sums=('f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3'
             'cc2a0c05fbf5fdaeb95247101728141f6d17f6988e22c79b48fcb57d239c1a0d'
             'SKIP'
             'b5f3b271f8908c9136c3533f1ac4e05cdc712a9f1e6066a85b7e0555388d9fda'
-            'SKIP')
+            'SKIP'
+            'b9b8771b6a8bd7128f4344ad189e32c155abf72abd3ff646dcf5c78b08eb94c4'
+            'SKIP'
+            'aa6a3dfae16e3c71194b21328ff8679a9d983e09cc1a331d900501f95b9941e1'
+            'SKIP'
+            '720720067a21e8c57d2619f4c0b46846ac060ec6db97088634d62ab8628c70a9'
+            'SKIP'
+            'bb5c56b106f3abab71f35c9eed311c05358f8e3b0bd1029e634861077862ce6e'
+            'SKIP'
+            '34991cf6cec6c22bc1a55a76bc5f72b405165a2f14ef977a0446df7c18bdfbb4'
+            'SKIP'
+            'c09337d6a393d51bf709a59e17715da962462b09cac2923622050936e218c388'
+            'SKIP'
+            '734596ed9925ab36ac161cb4922f0e75ac2dd42c51c10ddcefa2f50ea6f70063'
+            'SKIP'
+            'e9eb1535e86652997ca9bda94646f494e55fcd4da31f7b02c7de7fe655ebec40'
+            'SKIP'
+            '397d49f2cf82ca16764f7ebf9d0c9c494f264173f59558467f921990fc17070d'
+            'SKIP'
+            'dac26fb42f5df71b30c46b3c5894c6016af5a283c57b45173386767ca53b1bf8'
+            'SKIP'
+            '66eb2c49dbf708cc781d411d0e44ed613480f0ef66d522272929d9cb7bb21e93'
+            'SKIP'
+            'a9171e731d08a454a50174889af8936fab962b33c37c67169b0cdf21b0b80821'
+            'SKIP'
+            '6a27e1b363f1bb133b9905f84b00e4d01885cac84858db46bdbf764849c9984b'
+            'SKIP'
+            '53425998005a4115bdf6001b9ffbe62c66bb2db205994b2e13005a3417ea6cbb'
+            'SKIP'
+            '650622a8d2954851ce0bc9d5ed659d1055c5a7547d13e54c9fceb37dde7fa986'
+            'SKIP'
+            'e6c0af42e4307825a1f411fbca889f56bf49f1a6e0da3fae0fc6052a8f916465'
+            'SKIP'
+            'e6b770d37e80509ed7ec5d8b59b4d2e5d6dba54ba659d7392de3b567f1eb6e54'
+            'SKIP'
+            '03454474ea7061ca4886bd081c5b05b2f28fa48f289487c448edd351e1ba931d'
+            'SKIP'
+            'e303da14a3c8a15fd1cb45394138f03dd16e66d2ac0d1ebcd933977df937d771'
+            'SKIP'
+            '2ec520ff1b631b9e6f39dffef4ad43c5f79fbc6a401f38c33c2555a6176682d4'
+            'SKIP'
+            'e1226c836a9c2fb6daff109e56ba21c13fd198e109cbb181de920af04fe153e6'
+            'SKIP'
+            'cae59282e3d1afd69f4f5dc00a180c712ef464c98b8fd7ccc9b03de944dc79b9'
+            'SKIP'
+            '516e6ec51ca0330989128a4eb2a8f6785e5d45d930899cbbbf37b8147ddfd854'
+            'SKIP'
+            '44f1c7bd18ea7f8772ce41e24dddd5f314e416ec8dfac6afe1ce8680c1bb4903'
+            'SKIP'
+            '0bb8ae5b6f23e13c60953eb5bbc8939e8f6c8faf2b216a20203af3b6f0217134'
+            'SKIP'
+            '907c92ef681154d10959a5f0cbe2a636688036990ba42e059af00cc2311b4be4'
+            'SKIP'
+            '534e68a989d36823f14a10299803f294eef39391619b4c329d78c20539d9fcd5'
+            'SKIP'
+            '4e80f2d05591175d4ed0a1a144509e97260e5593472aae586c07956215d99162'
+            'SKIP'
+            '36df03fce34590cacdda7e435f2881bc6a715ea6aca78cd79040c09ee9cb4d3e'
+            'SKIP'
+            'd90cc6570a47c8754e4c5d45834e0434c0a1fcabda9b8933b1fba84e3dabc083'
+            'SKIP'
+            'f7ff13ea46359217d696c6ccd49bc3d74c441ac5893d5151d95138017b0d10aa'
+            'SKIP'
+            '3eb165a871997851fddc88d076578bccfbb279cd2e6a1143d3b87a77022a0979'
+            'SKIP'
+            'd9537bb97936245b87f37ca0b3a07d739c83a700a9d894cfc850ca2698ee9639'
+            'SKIP'
+            'ccbb34ed7a90f25735b9b7152c4ba936440d678d5f12f40d39f67bea264c66d4'
+            'SKIP'
+            '7c25d0a53a115bc1f072ff0cfdd9aa88858e754ae8b15026a2582656e8bd9c43'
+            'SKIP'
+            'a40e0c0d4d64c1949bfb7d55955a3d9d2ef731544f76d837106cbae438db7b77'
+            'SKIP'
+            '028bf538c870465e1752514725372fa9eef6b7178d9b8d1e2ecc15edc5a63cc8'
+            'SKIP'
+            'a92a84405ee9845738c6b52d8f0f0eca16eb40afe0ebe0f4e9e1168597675311'
+            'SKIP'
+            '44a0b10a6dc83465ea86f5fba936b2bfbeffb1b3f0b2e04013bfed99ba4f6c5a'
+            'SKIP'
+            'b88a2b21894bb53706121c98ab22569ecc62a608773ee7315b1777f2bc26226c'
+            'SKIP'
+            'dd3867b49291f60386ca15c2bbb8dfc0d025565541d343d0e8242a37b5401a88'
+            'SKIP'
+            '3b09e9c751f1f15a8b8837bf5a628ec68e600ee16fae1768f62b079c68b47ede'
+            'SKIP'
+            'cdff2c55938598e86efe13fd7834b0118a2e0da4ea781f8c6c7f7628d0301948'
+            'SKIP'
+            'd9eb3717ba98e270b0a998f8dd90cbda072f63b6a6ea8f66763bde3ea64e591d'
+            'SKIP'
+            '51ccbd090285073b8aa1a8a6abfe108004247e0999e3b099b1e740ed101aee16'
+            'SKIP'
+            '9625e0ebd0f5d7e29e8c4ef88e5859f11d4467ac66a363d5105e5aa991e48efe'
+            'SKIP'
+        '4cb3ea4228163f5bf49ba72d8ede1f408afa97d3891d029ac346e2bcaa312211'
+        'SKIP'
+        '877d0812207f11a95d172e284c5f31d3d0db1a3c786fd6b97f92fc51ee89ede8'
+        'SKIP'
+        'b733bb9bbfab589719a3a8451a3e095e4be6e09fc7aded5114032d5daa1823bd'
+        'SKIP'
+        'c3c8485fcc18cb698e233faa1e78cbeccb56c9a460555cc736c847f9781adebf'
+        'SKIP')
 
 export KBUILD_BUILD_HOST=omarchy
 export KBUILD_BUILD_USER=$pkgbase
@@ -312,6 +568,7 @@ prepare() {
 
 build() {
   cd $_srcname
+  MAKEFLAGS="-j$(nproc) $MAKEFLAGS"
   make all
   make -C tools/bpf/bpftool vmlinux.h feature-clang-bpf-co-re=1
 }

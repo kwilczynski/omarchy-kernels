@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -u
+
+key="${GPG_KEY:-3DE334E7}"
+dir="${1:-.}"
+
+if [ ! -d "$dir" ]; then
+	printf 'not a directory: %s\n' "$dir" >&2
+	exit 1
+fi
+
+valid=0
+signed=0
+resigned=0
+failed=0
+
+while IFS= read -r -d '' patch; do
+	sig="$patch.sig"
+	if [ -f "$sig" ] && gpg --verify "$sig" "$patch" >/dev/null 2>&1; then
+		valid=$((valid + 1))
+		continue
+	fi
+	if [ -f "$sig" ]; then
+		action="re-signed stale"
+	else
+		action="signed"
+	fi
+	if gpg --yes --detach-sign --local-user "$key" "$patch" >/dev/null 2>&1 &&
+		gpg --verify "$sig" "$patch" >/dev/null 2>&1; then
+		printf '%-15s %s\n' "$action:" "$patch"
+		if [ "$action" = "signed" ]; then
+			signed=$((signed + 1))
+		else
+			resigned=$((resigned + 1))
+		fi
+	else
+		printf '%-15s %s\n' "FAILED:" "$patch"
+		failed=$((failed + 1))
+	fi
+done < <(find "$dir" -type f -name '*.patch' -print0 | sort -z)
+
+printf 'already valid: %d, signed: %d, re-signed: %d, failed: %d\n' \
+	"$valid" "$signed" "$resigned" "$failed"
+[ "$failed" -eq 0 ]
