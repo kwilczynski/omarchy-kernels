@@ -1,0 +1,1008 @@
+diff --git a/drivers/gpu/drm/i915/display/intel_alpm.c b/drivers/gpu/drm/i915/display/intel_alpm.c
+--- a/drivers/gpu/drm/i915/display/intel_alpm.c
++++ b/drivers/gpu/drm/i915/display/intel_alpm.c
+@@ -407,6 +407,11 @@ static void lnl_alpm_configure(struct intel_dp *intel_dp,
+ 			if (crtc_state->disable_as_sdp_when_pr_active)
+ 				pr_alpm_ctl |= PR_ALPM_CTL_AS_SDP_TRANSMISSION_IN_ACTIVE_DISABLE;
+ 
++			if (intel_display_power_dc3co_allowed(display))
++				pr_alpm_ctl |= PR_ALPM_CTL_USE_DC3CO_IDLE_PROTOCOL;
++			else
++				pr_alpm_ctl &= ~PR_ALPM_CTL_USE_DC3CO_IDLE_PROTOCOL;
++
+ 			intel_de_write(display, PR_ALPM_CTL(display, cpu_transcoder),
+ 				       pr_alpm_ctl);
+ 		}
+diff --git a/drivers/gpu/drm/i915/display/intel_display.c b/drivers/gpu/drm/i915/display/intel_display.c
+--- a/drivers/gpu/drm/i915/display/intel_display.c
++++ b/drivers/gpu/drm/i915/display/intel_display.c
+@@ -7441,6 +7441,7 @@ static void intel_atomic_commit_tail(struct intel_atomic_state *state)
+ 	struct intel_crtc *crtc;
+ 	struct intel_power_domain_mask put_domains[I915_MAX_PIPES] = {};
+ 	struct ref_tracker *wakeref = NULL;
++	int power_async_delay;
+ 
+ 	for_each_new_intel_crtc_in_state(state, crtc, new_crtc_state)
+ 		intel_atomic_dsb_prepare(state, crtc);
+@@ -7549,6 +7550,8 @@ static void intel_atomic_commit_tail(struct intel_atomic_state *state)
+ 	/* Now enable the clocks, plane, pipe, and connectors that we set up. */
+ 	display->modeset.funcs->commit_modeset_enables(state);
+ 
++	intel_display_power_dc3co_compute(state);
++
+ 	/* FIXME probably need to sequence this properly */
+ 	intel_program_dpkgc_latency(state);
+ 
+@@ -7645,11 +7648,12 @@ static void intel_atomic_commit_tail(struct intel_atomic_state *state)
+ 		 */
+ 		intel_uncore_arm_unclaimed_mmio_detection(uncore);
+ 	}
+-	/*
+-	 * Delay re-enabling DC states by 17 ms to avoid the off->on->off
+-	 * toggling overhead at and above 60 FPS.
+-	 */
+-	intel_display_power_put_async_delay(display, POWER_DOMAIN_DC_OFF, wakeref, 17);
++
++	power_async_delay = intel_display_power_select_target_dc_state(state);
++
++	intel_display_power_put_async_delay(display,
++					    POWER_DOMAIN_DC_OFF, wakeref, power_async_delay);
++
+ 	intel_display_rpm_put(display, state->wakeref);
+ 
+ 	/*
+diff --git a/drivers/gpu/drm/i915/display/intel_display_core.h b/drivers/gpu/drm/i915/display/intel_display_core.h
+--- a/drivers/gpu/drm/i915/display/intel_display_core.h
++++ b/drivers/gpu/drm/i915/display/intel_display_core.h
+@@ -538,6 +538,8 @@ struct intel_display {
+ 
+ 	struct {
+ 		struct i915_power_domains domains;
++		/* DC3CO state */
++		struct intel_dc3co_state dc3co;
+ 
+ 		/* Shadow for DISPLAY_PHY_CONTROL which can't be safely read */
+ 		u32 chv_phy_control;
+diff --git a/drivers/gpu/drm/i915/display/intel_display_device.h b/drivers/gpu/drm/i915/display/intel_display_device.h
+--- a/drivers/gpu/drm/i915/display/intel_display_device.h
++++ b/drivers/gpu/drm/i915/display/intel_display_device.h
+@@ -159,6 +159,7 @@ struct intel_display_platforms {
+ #define HAS_CUR_FBC(__display)		(!HAS_GMCH(__display) && IS_DISPLAY_VER(__display, 7, 13))
+ #define HAS_D12_PLANE_MINIMIZATION(__display)	((__display)->platform.rocketlake || (__display)->platform.alderlake_s)
+ #define HAS_DBUF_OVERLAP_DETECTION(__display)	(DISPLAY_RUNTIME_INFO(__display)->has_dbuf_overlap_detection)
++#define HAS_DC3CO(__display)		(DISPLAY_VER(__display) >= 35)
+ #define HAS_DDI(__display)		(DISPLAY_INFO(__display)->has_ddi)
+ #define HAS_DISPLAY(__display)		(DISPLAY_RUNTIME_INFO(__display)->pipe_mask != 0)
+ #define HAS_DMC(__display)		(DISPLAY_RUNTIME_INFO(__display)->has_dmc)
+diff --git a/drivers/gpu/drm/i915/display/intel_display_power.c b/drivers/gpu/drm/i915/display/intel_display_power.c
+--- a/drivers/gpu/drm/i915/display/intel_display_power.c
++++ b/drivers/gpu/drm/i915/display/intel_display_power.c
+@@ -14,7 +14,9 @@
+ #include "intel_cdclk.h"
+ #include "intel_clock_gating.h"
+ #include "intel_combo_phy.h"
++#include "intel_crtc.h"
+ #include "intel_de.h"
++#include "intel_display.h"
+ #include "intel_display_power.h"
+ #include "intel_display_power_map.h"
+ #include "intel_display_power_well.h"
+@@ -30,6 +32,8 @@
+ #include "intel_pch_refclk.h"
+ #include "intel_pmdemand.h"
+ #include "intel_pps_regs.h"
++#include "intel_psr.h"
++#include "intel_psr_regs.h"
+ #include "intel_snps_phy.h"
+ #include "skl_watermark.h"
+ #include "skl_watermark_regs.h"
+@@ -267,7 +271,7 @@ sanitize_target_dc_state(struct intel_display *display,
+ 	static const u32 states[] = {
+ 		DC_STATE_EN_UPTO_DC6,
+ 		DC_STATE_EN_UPTO_DC5,
+-		DC_STATE_EN_DC3CO,
++		DC_STATE_EN_UPTO_DC3CO,
+ 		DC_STATE_DISABLE,
+ 	};
+ 	int i;
+@@ -358,6 +362,144 @@ u32 intel_display_power_get_current_dc_state(struct intel_display *display)
+ 	return current_dc_state;
+ }
+ 
++bool intel_display_power_dc3co_supported(struct intel_display *display)
++{
++	struct i915_power_domains *power_domains = &display->power.domains;
++
++	if (!HAS_DC3CO(display))
++		return false;
++
++	return (power_domains->allowed_dc_mask & DC_STATE_EN_UPTO_DC3CO) == DC_STATE_EN_UPTO_DC3CO;
++}
++
++bool intel_display_power_dc3co_allowed(struct intel_display *display)
++{
++	struct intel_dc3co_state *dc3co = &display->power.dc3co;
++	bool allowed;
++
++	if (!intel_display_power_dc3co_supported(display))
++		return false;
++
++	mutex_lock(&dc3co->lock);
++	allowed = dc3co->allowed;
++	mutex_unlock(&dc3co->lock);
++
++	return allowed;
++}
++
++void intel_display_power_dc3co_update(struct intel_display *display, u32 trigger)
++{
++	struct intel_dc3co_state *dc3co = &display->power.dc3co;
++
++	if (!intel_display_power_dc3co_supported(display))
++		return;
++
++	mutex_lock(&dc3co->lock);
++	dc3co->trigger = trigger;
++	dc3co->allowed = !!trigger;
++	mutex_unlock(&dc3co->lock);
++}
++
++static bool intel_dc3co_port_pipe_compatible(struct intel_dp *intel_dp,
++					     const struct intel_crtc_state *crtc_state)
++{
++	struct intel_digital_port *dig_port = dp_to_dig_port(intel_dp);
++	enum pipe pipe = to_intel_crtc(crtc_state->uapi.crtc)->pipe;
++	enum port port = dig_port->base.port;
++	int num_pipes = intel_crtc_num_joined_pipes(crtc_state);
++
++	/* Need to follow 1:1 mapping because of CMTG restriction */
++	if (DISPLAY_VER(to_intel_display(crtc_state)) == 35)
++		return num_pipes == 1 &&
++		       ((pipe == PIPE_A && port == PORT_A) ||
++			(pipe == PIPE_B && port == PORT_B));
++	else
++		return num_pipes == 1 && pipe <= PIPE_B && port <= PORT_B;
++}
++
++void intel_display_power_dc3co_compute(struct intel_atomic_state *state)
++{
++	struct intel_display *display = to_intel_display(state);
++	struct intel_crtc *crtc;
++	struct intel_crtc_state *crtc_state;
++	struct intel_encoder *encoder;
++	struct intel_dp *intel_dp;
++	u8 active_pipes = 0;
++	enum pipe pipe;
++	u32 trigger = DC3CO_TRIGGER_NONE;
++
++	if (!intel_display_power_dc3co_supported(display))
++		return;
++
++	for_each_intel_crtc(display, crtc)
++		active_pipes |= crtc->active ? BIT(crtc->pipe) : 0;
++
++	active_pipes = intel_calc_active_pipes(state, active_pipes);
++
++	if (hweight8(active_pipes) != 1)
++		goto done;
++
++	pipe = ffs(active_pipes) - 1;
++	crtc = intel_crtc_for_pipe(display, pipe);
++
++	crtc_state = to_intel_crtc_state(crtc->base.state);
++
++	for_each_intel_encoder_mask(display->drm, encoder,
++				    crtc_state->uapi.encoder_mask) {
++		if (encoder->type != INTEL_OUTPUT_EDP)
++			goto done;
++
++		intel_dp = enc_to_intel_dp(encoder);
++
++		if (!intel_dc3co_port_pipe_compatible(intel_dp, crtc_state))
++			goto done;
++
++		if (intel_psr2_in_deep_sleep(intel_dp))
++			goto done;
++	}
++
++	if (crtc_state->has_lobf)
++		trigger |= DC3CO_TRIGGER_LOBF;
++	if (crtc_state->has_panel_replay && intel_dp->as_sdp_supported)
++		trigger |= DC3CO_TRIGGER_PANEL_REPLAY;
++	if (crtc_state->has_sel_update)
++		trigger |= DC3CO_TRIGGER_PSR2;
++
++done:
++	intel_display_power_dc3co_update(display, trigger);
++}
++
++/*
++ * Select the target DC state for this commit and return the async-put delay
++ * to use when releasing the DC_OFF reference.
++ *
++ * Picks DC_STATE_EN_UPTO_DC3CO when DC3CO can be enabled
++ * otherwise falls back to default DC state of DC_STATE_EN_UPTO_DC6.
++ * The chosen target is programmed via intel_display_power_set_target_dc_state().
++ *
++ * Returns the async-put delay (in ms) to use when releasing the DC_OFF
++ * reference: DC3CO_PUT_ASYNC_DELAY_MS when DC3CO was selected, otherwise
++ * DC6_PUT_ASYNC_DELAY_MS.
++ */
++int intel_display_power_select_target_dc_state(struct intel_atomic_state *state)
++{
++	struct intel_display *display = to_intel_display(state);
++	u32 target_dc_state;
++
++	if (!intel_display_power_dc3co_supported(display))
++		return DC6_PUT_ASYNC_DELAY_MS;
++
++	if (intel_display_power_dc3co_allowed(display))
++		target_dc_state = DC_STATE_EN_UPTO_DC3CO;
++	else
++		target_dc_state = DC_STATE_EN_UPTO_DC6;
++
++	intel_display_power_set_target_dc_state(display, target_dc_state);
++
++	return target_dc_state == DC_STATE_EN_UPTO_DC3CO ?
++		DC3CO_PUT_ASYNC_DELAY_MS : DC6_PUT_ASYNC_DELAY_MS;
++}
++
+ static void __async_put_domains_mask(struct i915_power_domains *power_domains,
+ 				     struct intel_power_domain_mask *mask)
+ {
+@@ -956,7 +1098,9 @@ static u32 get_allowed_dc_mask(struct intel_display *display, int enable_dc)
+ 	if (!HAS_DISPLAY(display))
+ 		return 0;
+ 
+-	if (DISPLAY_VER(display) >= 20)
++	if (DISPLAY_VER(display) >= 35)
++		max_dc = 4;
++	else if (DISPLAY_VER(display) >= 20)
+ 		max_dc = 2;
+ 	else if (display->platform.dg2)
+ 		max_dc = 1;
+@@ -999,10 +1143,10 @@ static u32 get_allowed_dc_mask(struct intel_display *display, int enable_dc)
+ 
+ 	switch (requested_dc) {
+ 	case 4:
+-		mask |= DC_STATE_EN_DC3CO | DC_STATE_EN_UPTO_DC6;
++		mask |= DC_STATE_EN_UPTO_DC3CO | DC_STATE_EN_UPTO_DC6;
+ 		break;
+ 	case 3:
+-		mask |= DC_STATE_EN_DC3CO | DC_STATE_EN_UPTO_DC5;
++		mask |= DC_STATE_EN_UPTO_DC3CO | DC_STATE_EN_UPTO_DC5;
+ 		break;
+ 	case 2:
+ 		mask |= DC_STATE_EN_UPTO_DC6;
+@@ -1037,6 +1181,7 @@ int intel_display_power_init(struct intel_display *display)
+ 		sanitize_target_dc_state(display, DC_STATE_EN_UPTO_DC6);
+ 
+ 	mutex_init(&power_domains->lock);
++	mutex_init(&display->power.dc3co.lock);
+ 
+ 	INIT_DELAYED_WORK(&power_domains->async_put_work,
+ 			  intel_display_power_put_async_work);
+diff --git a/drivers/gpu/drm/i915/display/intel_display_power.h b/drivers/gpu/drm/i915/display/intel_display_power.h
+--- a/drivers/gpu/drm/i915/display/intel_display_power.h
++++ b/drivers/gpu/drm/i915/display/intel_display_power.h
+@@ -9,9 +9,12 @@
+ #include <linux/mutex.h>
+ #include <linux/workqueue.h>
+ 
++#include "intel_display_limits.h"
++
+ enum aux_ch;
+ enum port;
+ struct i915_power_well;
++struct intel_atomic_state;
+ struct intel_display;
+ struct intel_encoder;
+ struct ref_tracker;
+@@ -131,6 +134,36 @@ struct intel_power_domain_mask {
+ 	DECLARE_BITMAP(bits, POWER_DOMAIN_NUM);
+ };
+ 
++/*
++ * DC3CO enabling triggers (bitmask).
++ * DC3CO may be enabled when at least one of these triggers is active.
++ * Additional constraints may still apply.
++ */
++#define DC3CO_TRIGGER_NONE		(0)
++#define DC3CO_TRIGGER_PSR2		BIT(0)
++#define DC3CO_TRIGGER_LOBF		BIT(1)
++#define DC3CO_TRIGGER_PANEL_REPLAY	BIT(2)
++#define DC3CO_TRIGGER_ALL		(DC3CO_TRIGGER_PSR2 | \
++					 DC3CO_TRIGGER_LOBF | \
++					 DC3CO_TRIGGER_PANEL_REPLAY)
++
++/*
++ * Delay to re-enable DC5/DC6 states by 17 ms to avoid the off->on->off
++ * toggling overhead at and above 60 FPS.
++ */
++#define DC6_PUT_ASYNC_DELAY_MS		17
++/*
++ * Use minimal re-enable delay to allow DC3CO entry on
++ * the next idle frame.
++ */
++#define DC3CO_PUT_ASYNC_DELAY_MS	1
++
++struct intel_dc3co_state {
++	struct mutex lock; /* protects allowed and trigger fields */
++	bool allowed; /* DC3CO compute result */
++	u32 trigger; /* Bitmask of active DC3CO triggers */
++};
++
+ struct i915_power_domains {
+ 	/*
+ 	 * Power wells needed for initialization at driver init and suspend
+@@ -182,6 +215,11 @@ void intel_display_power_resume_early(struct intel_display *display);
+ void intel_display_power_set_target_dc_state(struct intel_display *display,
+ 					     u32 state);
+ u32 intel_display_power_get_current_dc_state(struct intel_display *display);
++bool intel_display_power_dc3co_supported(struct intel_display *display);
++void intel_display_power_dc3co_update(struct intel_display *display, u32 trigger);
++bool intel_display_power_dc3co_allowed(struct intel_display *display);
++void intel_display_power_dc3co_compute(struct intel_atomic_state *state);
++int intel_display_power_select_target_dc_state(struct intel_atomic_state *state);
+ 
+ void intel_display_power_runtime_suspend(struct intel_display *display);
+ void intel_display_power_runtime_resume(struct intel_display *display);
+diff --git a/drivers/gpu/drm/i915/display/intel_display_power_well.c b/drivers/gpu/drm/i915/display/intel_display_power_well.c
+--- a/drivers/gpu/drm/i915/display/intel_display_power_well.c
++++ b/drivers/gpu/drm/i915/display/intel_display_power_well.c
+@@ -772,7 +772,7 @@ static u32 gen9_dc_mask(struct intel_display *display)
+ 	mask = DC_STATE_EN_UPTO_DC5;
+ 
+ 	if (DISPLAY_VER(display) >= 12)
+-		mask |= DC_STATE_EN_DC3CO | DC_STATE_EN_UPTO_DC6
++		mask |= DC_STATE_EN_UPTO_DC3CO | DC_STATE_EN_UPTO_DC6
+ 					  | DC_STATE_EN_DC9;
+ 	else if (DISPLAY_VER(display) == 11)
+ 		mask |= DC_STATE_EN_UPTO_DC6 | DC_STATE_EN_DC9;
+@@ -866,21 +866,30 @@ void gen9_set_dc_state(struct intel_display *display, u32 state)
+ 	power_domains->dc_state = val & mask;
+ }
+ 
+-static void tgl_enable_dc3co(struct intel_display *display)
++void xe3lpd_enable_dc_count(struct intel_display *display)
+ {
+-	drm_dbg_kms(display->drm, "Enabling DC3CO\n");
+-	gen9_set_dc_state(display, DC_STATE_EN_DC3CO);
++	if (DISPLAY_VER(display) < 35)
++		return;
++
++	intel_de_write(display, DC_COUNT_EN, DC_COUNT_EN_COUNTER_ENABLE);
+ }
+ 
+-static void tgl_disable_dc3co(struct intel_display *display)
++static void assert_can_enable_dc3co(struct intel_display *display)
+ {
+-	drm_dbg_kms(display->drm, "Disabling DC3CO\n");
+-	intel_de_rmw(display, DC_STATE_EN, DC_STATE_DC3CO_STATUS, 0);
+-	gen9_set_dc_state(display, DC_STATE_DISABLE);
+-	/*
+-	 * Delay of 200us DC3CO Exit time B.Spec 49196
+-	 */
+-	usleep_range(200, 210);
++	drm_WARN_ONCE(display->drm,
++		      (intel_de_read(display, DC_STATE_EN) &
++		       DC_STATE_EN_UPTO_DC3CO),
++		      "DC3CO already programmed to be enabled.\n");
++
++	assert_main_dmc_loaded(display);
++}
++
++static void xe3lpd_enable_dc3co(struct intel_display *display)
++{
++	assert_can_enable_dc3co(display);
++	drm_dbg_kms(display->drm, "Enabling DC3CO\n");
++	intel_dmc_wl_enable(display, DC_STATE_EN_UPTO_DC3CO);
++	gen9_set_dc_state(display, DC_STATE_EN_UPTO_DC3CO);
+ }
+ 
+ static void assert_can_enable_dc5(struct intel_display *display)
+@@ -1039,8 +1048,8 @@ static void bxt_verify_dpio_phy_power_wells(struct intel_display *display)
+ static bool gen9_dc_off_power_well_enabled(struct intel_display *display,
+ 					   struct i915_power_well *power_well)
+ {
+-	return ((intel_de_read(display, DC_STATE_EN) & DC_STATE_EN_DC3CO) == 0 &&
+-		(intel_de_read(display, DC_STATE_EN) & DC_STATE_EN_UPTO_DC5_DC6_MASK) == 0);
++	return ((intel_de_read(display, DC_STATE_EN) & DC_STATE_EN_UPTO_DC3CO) == 0 &&
++		(intel_de_read(display, DC_STATE_EN) & DC_STATE_EN_UPTO_DC3CO_DC5_DC6_MASK) == 0);
+ }
+ 
+ static void gen9_assert_dbuf_enabled(struct intel_display *display)
+@@ -1061,11 +1070,6 @@ void gen9_disable_dc_states(struct intel_display *display)
+ 	struct intel_cdclk_config cdclk_config = {};
+ 	u32 old_state = power_domains->dc_state;
+ 
+-	if (power_domains->target_dc_state == DC_STATE_EN_DC3CO) {
+-		tgl_disable_dc3co(display);
+-		return;
+-	}
+-
+ 	if (HAS_DISPLAY(display)) {
+ 		intel_dmc_wl_get_noreg(display);
+ 		gen9_set_dc_state(display, DC_STATE_DISABLE);
+@@ -1076,9 +1080,13 @@ void gen9_disable_dc_states(struct intel_display *display)
+ 	}
+ 
+ 	if (old_state == DC_STATE_EN_UPTO_DC5 ||
+-	    old_state == DC_STATE_EN_UPTO_DC6)
++	    old_state == DC_STATE_EN_UPTO_DC6 ||
++	    old_state == DC_STATE_EN_UPTO_DC3CO)
+ 		intel_dmc_wl_disable(display);
+ 
++	if (old_state == DC_STATE_EN_UPTO_DC3CO)
++		return;
++
+ 	intel_cdclk_get_cdclk(display, &cdclk_config);
+ 	/* Can't read out voltage_level so can't use intel_cdclk_changed() */
+ 	drm_WARN_ON(display->drm,
+@@ -1114,8 +1122,8 @@ static void gen9_dc_off_power_well_disable(struct intel_display *display,
+ 		return;
+ 
+ 	switch (power_domains->target_dc_state) {
+-	case DC_STATE_EN_DC3CO:
+-		tgl_enable_dc3co(display);
++	case DC_STATE_EN_UPTO_DC3CO:
++		xe3lpd_enable_dc3co(display);
+ 		break;
+ 	case DC_STATE_EN_UPTO_DC6:
+ 		skl_enable_dc6(display);
+diff --git a/drivers/gpu/drm/i915/display/intel_display_power_well.h b/drivers/gpu/drm/i915/display/intel_display_power_well.h
+--- a/drivers/gpu/drm/i915/display/intel_display_power_well.h
++++ b/drivers/gpu/drm/i915/display/intel_display_power_well.h
+@@ -159,6 +159,7 @@ void gen9_set_dc_state(struct intel_display *display, u32 state);
+ void gen9_disable_dc_states(struct intel_display *display);
+ void bxt_enable_dc9(struct intel_display *display);
+ void bxt_disable_dc9(struct intel_display *display);
++void xe3lpd_enable_dc_count(struct intel_display *display);
+ 
+ extern const struct i915_power_well_ops i9xx_always_on_power_well_ops;
+ extern const struct i915_power_well_ops chv_pipe_power_well_ops;
+diff --git a/drivers/gpu/drm/i915/display/intel_display_regs.h b/drivers/gpu/drm/i915/display/intel_display_regs.h
+--- a/drivers/gpu/drm/i915/display/intel_display_regs.h
++++ b/drivers/gpu/drm/i915/display/intel_display_regs.h
+@@ -3070,19 +3070,25 @@ enum skl_power_gate {
+ /* GEN9 DC */
+ #define DC_STATE_EN			_MMIO(0x45504)
+ #define  DC_STATE_DISABLE		0
+-#define  DC_STATE_EN_DC3CO		REG_BIT(30)
+ #define  DC_STATE_DC3CO_STATUS		REG_BIT(29)
+ #define  HOLD_PHY_CLKREQ_PG1_LATCH	REG_BIT(21)
+ #define  HOLD_PHY_PG1_LATCH		REG_BIT(20)
+-#define  DC_STATE_EN_UPTO_DC5		(1 << 0)
+ #define  DC_STATE_EN_DC9		(1 << 3)
+-#define  DC_STATE_EN_UPTO_DC6		(2 << 0)
+-#define  DC_STATE_EN_UPTO_DC5_DC6_MASK   0x3
++#define  DC_STATE_EN_UPTO_DC3CO_DC5_DC6_MASK	REG_GENMASK(1, 0)
++#define  DC_STATE_EN_DISABLE		REG_FIELD_PREP(DC_STATE_EN_UPTO_DC3CO_DC5_DC6_MASK, 0)
++#define  DC_STATE_EN_UPTO_DC5		REG_FIELD_PREP(DC_STATE_EN_UPTO_DC3CO_DC5_DC6_MASK, 1)
++#define  DC_STATE_EN_UPTO_DC6		REG_FIELD_PREP(DC_STATE_EN_UPTO_DC3CO_DC5_DC6_MASK, 2)
++#define  DC_STATE_EN_UPTO_DC3CO	REG_FIELD_PREP(DC_STATE_EN_UPTO_DC3CO_DC5_DC6_MASK, 3)
+ 
+ #define  DC_STATE_DEBUG                  _MMIO(0x45520)
+ #define  DC_STATE_DEBUG_MASK_CORES	(1 << 0)
+ #define  DC_STATE_DEBUG_MASK_MEMORY_UP	(1 << 1)
+ 
++#define DC_COUNT_EN			_MMIO(0x457B4)
++#define DC_COUNT_EN_COUNTER_ENABLE	REG_BIT(31)
++
++#define DC_STATE_DC3CO_RESIDENCY	_MMIO(0x457B8)
++
+ #define D_COMP_BDW			_MMIO(0x138144)
+ 
+ /* Pipe WM_LINETIME - watermark line time */
+diff --git a/drivers/gpu/drm/i915/display/intel_display_types.h b/drivers/gpu/drm/i915/display/intel_display_types.h
+--- a/drivers/gpu/drm/i915/display/intel_display_types.h
++++ b/drivers/gpu/drm/i915/display/intel_display_types.h
+@@ -1185,7 +1185,6 @@ struct intel_crtc_state {
+ 	bool pkg_c_latency_used;
+ 	/* Only used for state verification. */
+ 	enum intel_panel_replay_dsc_support panel_replay_dsc_support;
+-	u32 dc3co_exitline;
+ 	u16 su_y_granularity;
+ 	u8 active_non_psr_pipes;
+ 	u8 entry_setup_frames;
+@@ -1772,14 +1771,16 @@ struct intel_psr {
+ 	ktime_t last_exit;
+ 	bool sink_not_reliable;
+ 	bool irq_aux_error;
++	/* DC3CO allowed used to control PSR configuration */
++	bool dc3co_allowed;
++	/* DC3CO disable work */
++	struct delayed_work dc3co_work;
+ 	u16 su_w_granularity;
+ 	u16 su_y_granularity;
+ 	bool source_panel_replay_support;
+ 	bool sink_panel_replay_support;
+ 	bool panel_replay_enabled;
+-	u32 dc3co_exitline;
+ 	u32 dc3co_exit_delay;
+-	struct delayed_work dc3co_work;
+ 	struct delayed_work panel_replay_reenable_work;
+ 	u8 entry_setup_frames;
+ 
+diff --git a/drivers/gpu/drm/i915/display/intel_dmc.c b/drivers/gpu/drm/i915/display/intel_dmc.c
+--- a/drivers/gpu/drm/i915/display/intel_dmc.c
++++ b/drivers/gpu/drm/i915/display/intel_dmc.c
+@@ -941,6 +941,8 @@ void intel_dmc_load_program(struct intel_display *display)
+ 
+ 	gen9_set_dc_state_debugmask(display);
+ 
++	xe3lpd_enable_dc_count(display);
++
+ 	pipedmc_clock_gating_wa(display, false);
+ }
+ 
+@@ -1647,19 +1649,20 @@ static int intel_dmc_debugfs_status_show(struct seq_file *m, void *unused)
+ 		   DMC_VERSION_MINOR(dmc->version));
+ 
+ 	if (DISPLAY_VER(display) >= 12) {
+-		intel_reg_t dc3co_reg;
++		if (DISPLAY_VER(display) >= 35) {
++			dc5_reg = DG1_DMC_DEBUG_DC5_COUNT;
++			seq_printf(m, "DC3CO count: %d\n",
++				   intel_de_read(display, XE3P_DMC_DC3CO_COUNT));
+ 
+-		if (display->platform.dgfx || DISPLAY_VER(display) >= 14) {
+-			dc3co_reg = DG1_DMC_DEBUG3;
++			seq_printf(m, "DC3CO residency: %d\n",
++				   intel_de_read(display, DC_STATE_DC3CO_RESIDENCY));
++		} else if (display->platform.dgfx || DISPLAY_VER(display) >= 14) {
+ 			dc5_reg = DG1_DMC_DEBUG_DC5_COUNT;
+ 		} else {
+-			dc3co_reg = TGL_DMC_DEBUG3;
+ 			dc5_reg = TGL_DMC_DEBUG_DC5_COUNT;
+ 			dc6_reg = TGL_DMC_DEBUG_DC6_COUNT;
+ 		}
+ 
+-		seq_printf(m, "DC3CO count: %d\n",
+-			   intel_de_read(display, dc3co_reg));
+ 	} else {
+ 		dc5_reg = display->platform.broxton ? BXT_DMC_DC3_DC5_COUNT :
+ 			SKL_DMC_DC3_DC5_COUNT;
+diff --git a/drivers/gpu/drm/i915/display/intel_dmc_regs.h b/drivers/gpu/drm/i915/display/intel_dmc_regs.h
+--- a/drivers/gpu/drm/i915/display/intel_dmc_regs.h
++++ b/drivers/gpu/drm/i915/display/intel_dmc_regs.h
+@@ -531,6 +531,8 @@ enum pipedmc_event_id {
+ #define TGL_DMC_DEBUG3		_MMIO(0x101090)
+ #define DG1_DMC_DEBUG3		_MMIO(0x13415c)
+ 
++#define XE3P_DMC_DC3CO_COUNT	_MMIO(0x8f05c)
++
+ #define DMC_WAKELOCK_CFG	_MMIO(0x8F1B0)
+ #define  DMC_WAKELOCK_CFG_ENABLE REG_BIT(31)
+ #define DMC_WAKELOCK1_CTL	_MMIO(0x8F140)
+diff --git a/drivers/gpu/drm/i915/display/intel_dmc_wl.c b/drivers/gpu/drm/i915/display/intel_dmc_wl.c
+--- a/drivers/gpu/drm/i915/display/intel_dmc_wl.c
++++ b/drivers/gpu/drm/i915/display/intel_dmc_wl.c
+@@ -267,7 +267,7 @@ static bool intel_dmc_wl_check_range(struct intel_display *display,
+ 	 * the DMC and requires a DC exit for proper access.
+ 	 */
+ 	switch (dc_state) {
+-	case DC_STATE_EN_DC3CO:
++	case DC_STATE_EN_UPTO_DC3CO:
+ 		ranges = xe3lpd_dc3co_dmc_ranges;
+ 		break;
+ 	case DC_STATE_EN_UPTO_DC5:
+diff --git a/drivers/gpu/drm/i915/display/intel_psr.c b/drivers/gpu/drm/i915/display/intel_psr.c
+--- a/drivers/gpu/drm/i915/display/intel_psr.c
++++ b/drivers/gpu/drm/i915/display/intel_psr.c
+@@ -88,22 +88,6 @@
+  * issues the self-refresh re-enable code is done from a work queue, which
+  * must be correctly synchronized/cancelled when shutting down the pipe."
+  *
+- * DC3CO (DC3 clock off)
+- *
+- * On top of PSR2, GEN12 adds a intermediate power savings state that turns
+- * clock off automatically during PSR2 idle state.
+- * The smaller overhead of DC3co entry/exit vs. the overhead of PSR2 deep sleep
+- * entry/exit allows the HW to enter a low-power state even when page flipping
+- * periodically (for instance a 30fps video playback scenario).
+- *
+- * Every time a flips occurs PSR2 will get out of deep sleep state(if it was),
+- * so DC3CO is enabled and tgl_dc3co_disable_work is schedule to run after 6
+- * frames, if no other flip occurs and the function above is executed, DC3CO is
+- * disabled and PSR2 is configured to enter deep sleep, resetting again in case
+- * of another flip.
+- * Front buffer modifications do not trigger DC3CO activation on purpose as it
+- * would bring a lot of complexity and most of the moderns systems will only
+- * use page flips.
+  */
+ 
+ /*
+@@ -1104,10 +1088,11 @@ static void hsw_activate_psr2(struct intel_dp *intel_dp)
+ 	u32 psr_val = 0;
+ 	u8 idle_frames;
+ 
+-	/* Wa_16025596647 */
+-	if ((DISPLAY_VER(display) == 20 ||
+-	     IS_DISPLAY_VERx100_STEP(display, 3000, STEP_A0, STEP_B0)) &&
+-	    is_dc5_dc6_blocked(intel_dp) && intel_dp->psr.pkg_c_latency_used)
++	/* DC3CO / Wa_16025596647 */
++	if (intel_dp->psr.dc3co_allowed ||
++	    ((DISPLAY_VER(display) == 20 ||
++	      IS_DISPLAY_VERx100_STEP(display, 3000, STEP_A0, STEP_B0)) &&
++	     is_dc5_dc6_blocked(intel_dp) && intel_dp->psr.pkg_c_latency_used))
+ 		idle_frames = 0;
+ 	else
+ 		idle_frames = psr_compute_idle_frames(intel_dp);
+@@ -1226,108 +1211,6 @@ static void psr2_program_idle_frames(struct intel_dp *intel_dp,
+ 		     EDP_PSR2_IDLE_FRAMES(idle_frames));
+ }
+ 
+-static void tgl_psr2_enable_dc3co(struct intel_dp *intel_dp)
+-{
+-	struct intel_display *display = to_intel_display(intel_dp);
+-
+-	psr2_program_idle_frames(intel_dp, 0);
+-	intel_display_power_set_target_dc_state(display, DC_STATE_EN_DC3CO);
+-}
+-
+-static void tgl_psr2_disable_dc3co(struct intel_dp *intel_dp)
+-{
+-	struct intel_display *display = to_intel_display(intel_dp);
+-
+-	intel_display_power_set_target_dc_state(display, DC_STATE_EN_UPTO_DC6);
+-	psr2_program_idle_frames(intel_dp, psr_compute_idle_frames(intel_dp));
+-}
+-
+-static void tgl_dc3co_disable_work(struct work_struct *work)
+-{
+-	struct intel_dp *intel_dp =
+-		container_of(work, typeof(*intel_dp), psr.dc3co_work.work);
+-
+-	mutex_lock(&intel_dp->psr.lock);
+-	/* If delayed work is pending, it is not idle */
+-	if (delayed_work_pending(&intel_dp->psr.dc3co_work))
+-		goto unlock;
+-
+-	tgl_psr2_disable_dc3co(intel_dp);
+-unlock:
+-	mutex_unlock(&intel_dp->psr.lock);
+-}
+-
+-static void tgl_disallow_dc3co_on_psr2_exit(struct intel_dp *intel_dp)
+-{
+-	if (!intel_dp->psr.dc3co_exitline)
+-		return;
+-
+-	cancel_delayed_work(&intel_dp->psr.dc3co_work);
+-	/* Before PSR2 exit disallow dc3co*/
+-	tgl_psr2_disable_dc3co(intel_dp);
+-}
+-
+-static bool
+-dc3co_is_pipe_port_compatible(struct intel_dp *intel_dp,
+-			      struct intel_crtc_state *crtc_state)
+-{
+-	struct intel_display *display = to_intel_display(intel_dp);
+-	struct intel_digital_port *dig_port = dp_to_dig_port(intel_dp);
+-	enum pipe pipe = to_intel_crtc(crtc_state->uapi.crtc)->pipe;
+-	enum port port = dig_port->base.port;
+-
+-	if (display->platform.alderlake_p || DISPLAY_VER(display) >= 14)
+-		return pipe <= PIPE_B && port <= PORT_B;
+-	else
+-		return pipe == PIPE_A && port == PORT_A;
+-}
+-
+-static void
+-tgl_dc3co_exitline_compute_config(struct intel_dp *intel_dp,
+-				  struct intel_crtc_state *crtc_state)
+-{
+-	struct intel_display *display = to_intel_display(intel_dp);
+-	const u32 crtc_vdisplay = crtc_state->uapi.adjusted_mode.crtc_vdisplay;
+-	struct i915_power_domains *power_domains = &display->power.domains;
+-	u32 exit_scanlines;
+-
+-	/*
+-	 * FIXME: Due to the changed sequence of activating/deactivating DC3CO,
+-	 * disable DC3CO until the changed dc3co activating/deactivating sequence
+-	 * is applied. B.Specs:49196
+-	 */
+-	return;
+-
+-	/*
+-	 * DMC's DC3CO exit mechanism has an issue with Selective Fecth
+-	 * TODO: when the issue is addressed, this restriction should be removed.
+-	 */
+-	if (crtc_state->enable_psr2_sel_fetch)
+-		return;
+-
+-	if (!(power_domains->allowed_dc_mask & DC_STATE_EN_DC3CO))
+-		return;
+-
+-	if (!dc3co_is_pipe_port_compatible(intel_dp, crtc_state))
+-		return;
+-
+-	/* Wa_16011303918:adl-p */
+-	if (intel_display_wa(display, INTEL_DISPLAY_WA_16011303918))
+-		return;
+-
+-	/*
+-	 * DC3CO Exit time 200us B.Spec 49196
+-	 * PSR2 transcoder Early Exit scanlines = ROUNDUP(200 / line time) + 1
+-	 */
+-	exit_scanlines =
+-		intel_usecs_to_scanlines(&crtc_state->uapi.adjusted_mode, 200) + 1;
+-
+-	if (drm_WARN_ON(display->drm, exit_scanlines > crtc_vdisplay))
+-		return;
+-
+-	crtc_state->dc3co_exitline = crtc_vdisplay - exit_scanlines;
+-}
+-
+ static bool intel_psr2_sel_fetch_config_valid(struct intel_dp *intel_dp,
+ 					      struct intel_crtc_state *crtc_state)
+ {
+@@ -1700,8 +1583,6 @@ static bool intel_psr2_config_valid(struct intel_dp *intel_dp,
+ 		return false;
+ 	}
+ 
+-	tgl_dc3co_exitline_compute_config(intel_dp, crtc_state);
+-
+ 	return true;
+ }
+ 
+@@ -1896,6 +1777,50 @@ static bool intel_psr_needs_wa_18037818876(struct intel_dp *intel_dp,
+ 		!crtc_state->has_sel_update);
+ }
+ 
++static void psr2_dc3co_disable_locked(struct intel_dp *intel_dp)
++{
++	struct intel_display *display = to_intel_display(intel_dp);
++
++	if (intel_dp->psr.dc3co_allowed) {
++		intel_dp->psr.dc3co_allowed = false;
++		intel_display_power_set_target_dc_state(display, DC_STATE_EN_UPTO_DC6);
++		psr2_program_idle_frames(intel_dp, psr_compute_idle_frames(intel_dp));
++	}
++}
++
++static void psr2_dc3co_disable_work(struct work_struct *work)
++{
++	struct intel_dp *intel_dp =
++		container_of(work, typeof(*intel_dp), psr.dc3co_work.work);
++
++	mutex_lock(&intel_dp->psr.lock);
++	psr2_dc3co_disable_locked(intel_dp);
++	mutex_unlock(&intel_dp->psr.lock);
++}
++
++static void
++psr2_dc3co_flush_locked(struct intel_dp *intel_dp, unsigned int frontbuffer_bits)
++{
++	struct intel_display *display = to_intel_display(intel_dp);
++
++	if (!intel_dp->psr.dc3co_allowed)
++		return;
++
++	if (!intel_dp->psr.sel_update_enabled ||
++	    !intel_dp->psr.active)
++		return;
++	/*
++	 * At every frontbuffer flush flip event modified delay of delayed work,
++	 * when delayed work schedules that means display has been idle.
++	 */
++	if (!(frontbuffer_bits &
++	    INTEL_FRONTBUFFER_ALL_MASK(intel_dp->psr.pipe)))
++		return;
++
++	mod_delayed_work(display->wq.unordered, &intel_dp->psr.dc3co_work,
++			 intel_dp->psr.dc3co_exit_delay);
++}
++
+ static
+ void intel_psr_set_non_psr_pipes(struct intel_dp *intel_dp,
+ 				 struct intel_crtc_state *crtc_state)
+@@ -2016,12 +1941,6 @@ void intel_psr_get_config(struct intel_encoder *encoder,
+ 	}
+ 
+ 	pipe_config->enable_psr2_su_region_et = intel_dp->psr.su_region_et_enabled;
+-
+-	if (DISPLAY_VER(display) >= 12) {
+-		val = intel_de_read(display,
+-				    TRANS_EXITLINE(display, cpu_transcoder));
+-		pipe_config->dc3co_exitline = REG_FIELD_GET(EXITLINE_MASK, val);
+-	}
+ unlock:
+ 	mutex_unlock(&intel_dp->psr.lock);
+ }
+@@ -2149,16 +2068,6 @@ static void intel_psr_enable_source(struct intel_dp *intel_dp,
+ 
+ 	psr_irq_control(intel_dp);
+ 
+-	/*
+-	 * TODO: if future platforms supports DC3CO in more than one
+-	 * transcoder, EXITLINE will need to be unset when disabling PSR
+-	 */
+-	if (intel_dp->psr.dc3co_exitline)
+-		intel_de_rmw(display,
+-			     TRANS_EXITLINE(display, cpu_transcoder),
+-			     EXITLINE_MASK,
+-			     intel_dp->psr.dc3co_exitline << EXITLINE_SHIFT | EXITLINE_ENABLE);
+-
+ 	if (HAS_PSR_HW_TRACKING(display) && HAS_PSR2_SEL_FETCH(display))
+ 		intel_de_rmw(display, CHICKEN_PAR1_1, IGNORE_PSR2_HW_TRACKING,
+ 			     intel_dp->psr.psr2_sel_fetch_enabled ?
+@@ -2258,7 +2167,6 @@ static void intel_psr_enable_locked(struct intel_dp *intel_dp,
+ 	/* DC5/DC6 requires at least 6 idle frames */
+ 	val = usecs_to_jiffies(intel_get_frame_time_us(crtc_state) * 6);
+ 	intel_dp->psr.dc3co_exit_delay = val;
+-	intel_dp->psr.dc3co_exitline = crtc_state->dc3co_exitline;
+ 	intel_dp->psr.psr2_sel_fetch_enabled = crtc_state->enable_psr2_sel_fetch;
+ 	intel_dp->psr.su_region_et_enabled = crtc_state->enable_psr2_su_region_et;
+ 	intel_dp->psr.psr2_sel_fetch_cff_enabled = false;
+@@ -2337,8 +2245,6 @@ static void intel_psr_exit(struct intel_dp *intel_dp)
+ 		intel_de_rmw(display, TRANS_DP2_CTL(intel_dp->psr.transcoder),
+ 			     TRANS_DP2_PANEL_REPLAY_ENABLE, 0);
+ 	} else if (intel_dp->psr.sel_update_enabled) {
+-		tgl_disallow_dc3co_on_psr2_exit(intel_dp);
+-
+ 		val = intel_de_rmw(display,
+ 				   EDP_PSR2_CTL(display, cpu_transcoder),
+ 				   EDP_PSR2_ENABLE, 0);
+@@ -2361,6 +2267,27 @@ static void intel_psr_exit(struct intel_dp *intel_dp)
+ 	intel_dp->psr.active = false;
+ }
+ 
++bool intel_psr2_in_deep_sleep(struct intel_dp *intel_dp)
++{
++	struct intel_display *display = to_intel_display(intel_dp);
++	enum transcoder cpu_transcoder;
++	bool in_deep_sleep = false;
++	u32 val;
++
++	mutex_lock(&intel_dp->psr.lock);
++
++	if (!intel_dp->psr.enabled || !intel_dp->psr.sel_update_enabled)
++		goto out;
++
++	cpu_transcoder = intel_dp->psr.transcoder;
++	val = intel_de_read(display, EDP_PSR2_STATUS(display, cpu_transcoder));
++	in_deep_sleep = (val & EDP_PSR2_STATUS_STATE_MASK) ==
++		EDP_PSR2_STATUS_STATE_DEEP_SLEEP;
++out:
++	mutex_unlock(&intel_dp->psr.lock);
++	return in_deep_sleep;
++}
++
+ static void intel_psr_wait_exit_locked(struct intel_dp *intel_dp)
+ {
+ 	struct intel_display *display = to_intel_display(intel_dp);
+@@ -2451,6 +2378,8 @@ static void intel_psr_disable_locked(struct intel_dp *intel_dp)
+ 	intel_dp->psr.psr2_sel_fetch_cff_enabled = false;
+ 	intel_dp->psr.active_non_psr_pipes = 0;
+ 	intel_dp->psr.pkg_c_latency_used = 0;
++	cancel_delayed_work(&intel_dp->psr.dc3co_work);
++	intel_dp->psr.dc3co_allowed = false;
+ }
+ 
+ /**
+@@ -2540,8 +2469,13 @@ void intel_psr_resume(struct intel_dp *intel_dp)
+ 		goto out;
+ 	}
+ 
+-	if (--intel_dp->psr.pause_counter == 0)
++	if (--intel_dp->psr.pause_counter == 0) {
+ 		intel_psr_activate(intel_dp);
++		/* re-arm cancelled dc3co work from pause */
++		if (intel_dp->psr.dc3co_allowed)
++			mod_delayed_work(display->wq.unordered, &intel_dp->psr.dc3co_work,
++					 intel_dp->psr.dc3co_exit_delay);
++	}
+ 
+ out:
+ 	mutex_unlock(&psr->lock);
+@@ -3245,10 +3179,13 @@ void intel_psr_post_plane_update(struct intel_atomic_state *state,
+ 	const struct intel_crtc_state *crtc_state =
+ 		intel_atomic_get_new_crtc_state(state, crtc);
+ 	struct intel_encoder *encoder;
++	bool dc3co_allowed;
+ 
+ 	if (!crtc_state->has_psr)
+ 		return;
+ 
++	dc3co_allowed = intel_display_power_dc3co_allowed(display);
++
+ 	verify_panel_replay_dsc_state(crtc_state);
+ 
+ 	for_each_intel_encoder_mask_with_psr(state->base.dev, encoder,
+@@ -3276,6 +3213,8 @@ void intel_psr_post_plane_update(struct intel_atomic_state *state,
+ 			keep_disabled = true;
+ 		}
+ 
++		intel_dp->psr.dc3co_allowed = dc3co_allowed;
++
+ 		if (!psr->enabled && !keep_disabled)
+ 			intel_psr_enable_locked(intel_dp, crtc_state);
+ 		else if (psr->enabled && !crtc_state->wm_level_disabled)
+@@ -3292,6 +3231,11 @@ void intel_psr_post_plane_update(struct intel_atomic_state *state,
+ 		 */
+ 		intel_dp->psr.busy_frontbuffer_bits = 0;
+ 
++		if (intel_dp->psr.dc3co_allowed) {
++			mod_delayed_work(display->wq.unordered, &intel_dp->psr.dc3co_work,
++					 intel_dp->psr.dc3co_exit_delay);
++		}
++
+ 		mutex_unlock(&psr->lock);
+ 	}
+ }
+@@ -3714,34 +3658,6 @@ void intel_psr_invalidate(struct intel_display *display,
+ 		mutex_unlock(&intel_dp->psr.lock);
+ 	}
+ }
+-/*
+- * When we will be completely rely on PSR2 S/W tracking in future,
+- * intel_psr_flush() will invalidate and flush the PSR for ORIGIN_FLIP
+- * event also therefore tgl_dc3co_flush_locked() require to be changed
+- * accordingly in future.
+- */
+-static void
+-tgl_dc3co_flush_locked(struct intel_dp *intel_dp, unsigned int frontbuffer_bits,
+-		       enum fb_op_origin origin)
+-{
+-	struct intel_display *display = to_intel_display(intel_dp);
+-
+-	if (!intel_dp->psr.dc3co_exitline || !intel_dp->psr.sel_update_enabled ||
+-	    !intel_dp->psr.active)
+-		return;
+-
+-	/*
+-	 * At every frontbuffer flush flip event modified delay of delayed work,
+-	 * when delayed work schedules that means display has been idle.
+-	 */
+-	if (!(frontbuffer_bits &
+-	    INTEL_FRONTBUFFER_ALL_MASK(intel_dp->psr.pipe)))
+-		return;
+-
+-	tgl_psr2_enable_dc3co(intel_dp);
+-	mod_delayed_work(display->wq.unordered, &intel_dp->psr.dc3co_work,
+-			 intel_dp->psr.dc3co_exit_delay);
+-}
+ 
+ static void _psr_flush_handle(struct intel_dp *intel_dp)
+ {
+@@ -3837,7 +3753,7 @@ void intel_psr_flush(struct intel_display *display,
+ 		if (origin == ORIGIN_FLIP ||
+ 		    (origin == ORIGIN_CURSOR_UPDATE &&
+ 		     !intel_dp->psr.psr2_sel_fetch_enabled)) {
+-			tgl_dc3co_flush_locked(intel_dp, frontbuffer_bits, origin);
++			psr2_dc3co_flush_locked(intel_dp, frontbuffer_bits);
+ 			goto unlock;
+ 		}
+ 
+@@ -3896,7 +3812,7 @@ void intel_psr_init(struct intel_dp *intel_dp)
+ 		intel_dp->psr.link_standby = connector->panel.vbt.psr.full_link;
+ 
+ 	INIT_WORK(&intel_dp->psr.work, intel_psr_work);
+-	INIT_DELAYED_WORK(&intel_dp->psr.dc3co_work, tgl_dc3co_disable_work);
++	INIT_DELAYED_WORK(&intel_dp->psr.dc3co_work, psr2_dc3co_disable_work);
+ 	INIT_DELAYED_WORK(&intel_dp->psr.panel_replay_reenable_work,
+ 			  panel_replay_reenable_work);
+ 	mutex_init(&intel_dp->psr.lock);
+diff --git a/drivers/gpu/drm/i915/display/intel_psr.h b/drivers/gpu/drm/i915/display/intel_psr.h
+--- a/drivers/gpu/drm/i915/display/intel_psr.h
++++ b/drivers/gpu/drm/i915/display/intel_psr.h
+@@ -87,5 +87,6 @@ void intel_psr_compute_config_late(struct intel_dp *intel_dp,
+ int intel_psr_min_guardband(struct intel_crtc_state *crtc_state);
+ bool intel_psr_use_trans_push(const struct intel_crtc_state *crtc_state);
+ bool intel_psr_pr_async_video_timing_supported(struct intel_dp *intel_dp);
++bool intel_psr2_in_deep_sleep(struct intel_dp *intel_dp);
+ 
+ #endif /* __INTEL_PSR_H__ */
+diff --git a/drivers/gpu/drm/i915/display/intel_psr_regs.h b/drivers/gpu/drm/i915/display/intel_psr_regs.h
+--- a/drivers/gpu/drm/i915/display/intel_psr_regs.h
++++ b/drivers/gpu/drm/i915/display/intel_psr_regs.h
+@@ -268,6 +268,7 @@
+ 
+ #define _PR_ALPM_CTL_A	0x60948
+ #define PR_ALPM_CTL(dev_priv, tran)	_MMIO_TRANS2(dev_priv, tran, _PR_ALPM_CTL_A)
++#define  PR_ALPM_CTL_USE_DC3CO_IDLE_PROTOCOL			BIT(7)
+ #define  PR_ALPM_CTL_ALLOW_LINK_OFF_BETWEEN_AS_SDP_AND_SU	BIT(6)
+ #define  PR_ALPM_CTL_RFB_UPDATE_CONTROL				BIT(5)
+ #define  PR_ALPM_CTL_AS_SDP_TRANSMISSION_IN_ACTIVE_DISABLE	BIT(4)

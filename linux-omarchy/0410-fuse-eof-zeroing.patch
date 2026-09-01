@@ -1,7 +1,7 @@
 diff --git a/fs/fuse/dir.c b/fs/fuse/dir.c
 --- a/fs/fuse/dir.c
 +++ b/fs/fuse/dir.c
-@@ -2282,6 +2282,9 @@ int fuse_do_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
+@@ -2280,6 +2280,9 @@ int fuse_do_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
  	 */
  	if ((is_truncate || !is_wb) &&
  	    S_ISREG(inode->i_mode) && oldsize != outarg.attr.size) {
