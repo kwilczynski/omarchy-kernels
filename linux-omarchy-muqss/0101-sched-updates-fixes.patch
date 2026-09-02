@@ -1,0 +1,62 @@
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -4932,7 +4932,12 @@ static int tg_cpus(struct task_group *tg)
+ 			nr = cpuset_num_cpus(cgrp);
+ 	}
+ 
+-	return nr;
++	/*
++	 * An empty cpuset would propagate a 0 shares_max into
++	 * __calc_smp_shares(), where clamp() yields hi when hi < lo and so
++	 * defeats the MIN_SHARES floor. Match tg_tasks(), which floors at 1.
++	 */
++	return max(nr, 1);
+ }
+ 
+ static inline int tg_tasks(struct task_group *tg)
+@@ -6971,14 +6976,14 @@ static int tg_throttle_down(struct task_group *tg, void *data)
+ static bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
+ {
+ 	struct cfs_bandwidth *cfs_b = tg_cfs_bandwidth(cfs_rq->tg);
+-	struct sched_entity *curr = cfs_rq->curr;
++	struct sched_entity *curr = cfs_rq->h_curr;
+ 	struct rq *rq = rq_of(cfs_rq);
+ 
+ 	scoped_guard(raw_spinlock, &cfs_b->lock) {
+ 		u64 target_runtime = 1;
+ 
+ 		/*
+-		 * If cfs_rq->curr is still runnable, we are here from an
++		 * If cfs_rq->h_curr is still runnable, we are here from an
+ 		 * update_curr(). Request sysctl_sched_cfs_bandwidth_slice
+ 		 * worth of bandwidth to continue running.
+ 		 *
+@@ -7185,7 +7190,7 @@ static bool distribute_cfs_runtime(struct cfs_bandwidth *cfs_b)
+ 		if (!list_empty(&cfs_rq->throttled_csd_list))
+ 			continue;
+ 
+-		if (cfs_rq->curr) {
++		if (cfs_rq->h_curr) {
+ 			update_rq_clock(rq);
+ 			update_curr(cfs_rq);
+ 		}
+@@ -10050,7 +10055,7 @@ struct task_struct *pick_task_fair(struct rq *rq, struct rq_flags *rf)
+ 
+ 	/* Might not have done put_prev_entity() */
+ 	if (cfs_rq->curr && cfs_rq->curr->on_rq)
+-		update_curr(cfs_rq);
++		update_curr_eevdf(cfs_rq);
+ 
+ 	se = pick_next_entity(rq, true);
+ 	if (!se)
+@@ -10153,7 +10158,7 @@ static void yield_task_fair(struct rq *rq)
+ 	/*
+ 	 * Update run-time statistics of the 'current'.
+ 	 */
+-	update_curr(cfs_rq);
++	update_curr_eevdf(cfs_rq);
+ 	/*
+ 	 * Tell update_rq_clock() that we've just updated,
+ 	 * so we don't do microscopic update in schedule()
+

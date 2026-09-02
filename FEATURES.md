@@ -1,26 +1,41 @@
 # Omarchy Kernels
 
-Linux 7.2.2 base. Six kernels from one patch baseline with
-scheduler-specific and Apple T2 overlays.
+Linux 7.2.3 in three scheduler flavours. Each flavour has a
+standard x86_64 package and an Apple T2 package. Unless a section
+names a flavour or hardware target, it applies to all six packages.
 
-## Kernels
+## Flavours
 
-- **linux-omarchy** - upstream EEVDF scheduler; sched-ext for
-  pluggable schedulers (scx-scheds).
-- **linux-omarchy-bore** - BORE 6.8.0, a burst-oriented EEVDF
-  variant biased toward interactive tasks; sched-ext available.
-  Adds the ADIOS I/O scheduler as a module; the default I/O
+### Base
+
+- Packages: `linux-omarchy` and `linux-omarchy-t2`.
+- Uses the upstream EEVDF scheduler. sched-ext is enabled for
+  pluggable schedulers from `scx-scheds`.
+
+### BORE
+
+- Packages: `linux-omarchy-bore` and `linux-omarchy-t2-bore`.
+- Uses BORE 6.8.0 on EEVDF. sched-ext remains enabled.
+- Adds the ADIOS 3.2.0 I/O scheduler as a module. The default I/O
   scheduler is unchanged.
-- **linux-omarchy-muqss** - MuQSS 0.31 (Con Kolivas ck lineage);
-  no sched-ext.
-- **linux-omarchy-t2**, **linux-omarchy-t2-bore**,
-  **linux-omarchy-t2-muqss** - the same three schedulers plus the
-  Apple T2 hardware stack.
+
+### MuQSS
+
+- Packages: `linux-omarchy-muqss` and `linux-omarchy-t2-muqss`.
+- Uses MuQSS 0.31 from the Con Kolivas ck patch series. MuQSS
+  replaces the mainline scheduler build, so sched-ext is not
+  available.
 
 ## Configuration
 
-- HZ=1000 with NO_HZ_FULL on four kernels; the MuQSS pair runs
-  HZ=100 with NO_HZ_IDLE. PREEMPT_DYNAMIC on all six.
+- Base and BORE: HZ=1000, NO_HZ_FULL, PREEMPT_DYNAMIC. BORE sets
+  the minimum base slice to 2,000,000 ns (CONFIG_MIN_BASE_SLICE_NS).
+- MuQSS: HZ=100, NO_HZ_IDLE, PREEMPT_DYNAMIC. CONFIG_RQ_MC=y and
+  CONFIG_SHARERQ=2 select the shared runqueue; CONFIG_SMT_NICE and
+  CONFIG_MUQSS_IOTIME are enabled. Core scheduling, automatic NUMA
+  balancing, utilization clamping, scheduler autogroup, CFS group
+  scheduling, CFS bandwidth control and cgroup CPU accounting are
+  not enabled.
 - RCU callbacks offloaded to kthreads on all CPUs
   (RCU_NOCB_CPU_DEFAULT_ALL): no RCU softirq work on the queueing
   CPU, longer C-state residency at idle.
@@ -32,14 +47,64 @@ scheduler-specific and Apple T2 overlays.
 
 ## Scheduling and latency
 
-- Load balancing spreads across small-core clusters on Intel
+### Standard base and BORE
+
+`linux-omarchy` and `linux-omarchy-bore` carry the complete 7.3
+scheduler pull, 33 commits, on the 7.2.3 base:
+
+- Cgroup scheduling is flattened onto one runqueue per CPU. Tasks
+  from every cgroup are picked from one queue. The group weight is
+  applied per task through `cgroup_mode`, which defaults to
+  `concur`.
+- Slice protection follows the running task's lag. An eligible
+  short-slice wakeup cancels the protection. A delayed-dequeue task
+  cannot preempt.
+- The follow-up fixes floor `tg_cpus()` at 1, charge the current
+  task during pick and yield, and read the per-level current during
+  throttling and bandwidth distribution.
+- Active balance does not start while the source CPU's current task
+  is off its runqueue. PSI skips irqtime accounting when no
+  interrupt time elapsed.
+
+The series author's test: minimum frame rate 3.8 to 20.6 fps under
+eight niced spinners, with the flat cgroup scheduler and a shorter
+slice.
+
+### Base and BORE on both hardware targets
+
+- Load balancing spreads work across small-core clusters on Intel
   hybrid CPUs and prefers fully idle cores.
-- detach_tasks() no longer scans the same tasks twice; avg_idle no
-  longer saturates with a stale value that kept idle cores from
+- Cache-aware balancing does not move a task from a CPU that fits
+  it to a smaller CPU that does not. RT and deadline push selection
+  skips migrate-disabled tasks.
+- `detach_tasks()` does not scan the same tasks twice. `avg_idle`
+  does not retain a saturated value that stops idle CPUs from
   pulling work.
-- The task-switch path (~20 functions) compiles always-inline; the
-  gain grows with Spectre mitigations enabled.
-- Cross-CPU function calls and waits run preemptible; TLB-flush
+- Approximately 20 functions in the task-switch path compile
+  always-inline. The patch author reports a larger gain when Spectre
+  mitigations are enabled.
+
+### BORE
+
+- The standard BORE package runs BORE 6.8.0 on the flat runqueue.
+  Its burst penalty, sleep accounting and wakeup preemption use the
+  flat runqueue's task weights.
+- The T2 BORE package runs BORE 6.8.0 without the 7.3 scheduler
+  changes.
+- Measured on the maintainer's machine against 7.2.1, seven runs:
+  stress-ng context switching +5% to +12%, fork +4% to +8%.
+
+### MuQSS
+
+- MuQSS replaces the fair, RT and deadline scheduler classes, so
+  the 7.3 scheduler changes above do not apply to it. The shared
+  cpuset, isolation, PSI and stop-machine changes do.
+- The T2 MuQSS package runs MuQSS 0.31 without the 7.3 scheduler
+  changes.
+
+### All flavours
+
+- Cross-CPU function calls and waits run preemptible. TLB-flush
   data moved to the stack as groundwork.
 
 ## Power management
@@ -102,9 +167,10 @@ scheduler-specific and Apple T2 overlays.
 
 ## Audio
 
-- 47 commits from the 7.3 sound fixes pull: HDA and USB audio
-  quirks, a USB MIDI out-of-bounds write fix, AMD ASoC DMI
-  entries, SoundWire and core fixes.
+- 47 of 53 commits from the 7.3 sound fixes pull: HDA and USB audio
+  quirks, a USB MIDI out-of-bounds write fix, AMD ASoC DMI entries,
+  SoundWire and core fixes. The six omitted commits change code
+  absent from 7.2.3.
 - 24 laptop audio fixes from the 7.3 cycle: speaker output,
   headset microphones, mute LEDs and jack detection on HP,
   Lenovo, Acer, ASUS, Razer, Dell, LG, Beelink, Minisforum and
@@ -149,8 +215,10 @@ scheduler-specific and Apple T2 overlays.
 
 ## Apple T2 kernels
 
-The standard set minus the Dell panel patches (T2-order forks
-replace them), plus:
+Each T2 package has the scheduler configuration of its standard
+counterpart, without the 7.3 scheduler changes. The three Dell
+display patches are not included. The applesmc cache fix is part of
+the T2 applesmc series. They add:
 
 - T2 buffer copy engine drivers: internal keyboard, trackpad and
   audio path.

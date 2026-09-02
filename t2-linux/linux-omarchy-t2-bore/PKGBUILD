@@ -2,7 +2,7 @@
 # Adopted from the Arch Linux linux package.
 
 pkgbase=linux-omarchy-t2-bore
-pkgver=7.2.3rc1
+pkgver=7.2.3
 pkgrel=1
 pkgdesc='Omarchy Linux (Apple T2 Macs, BORE CPU scheduler, ADIOS I/O scheduler)'
 url='https://omarchy.org'
@@ -151,9 +151,7 @@ validpgpkeys=(
   647F28654894E3BD457199BE38DBBDC86092693E  # Greg Kroah-Hartman
   12D27D5D8C8E9BF1AABC7C7C7C64768D3DE334E7  # Krzysztof Wilczynski
 )
-b2sums=('7d3904933ddca054bc085d34c2941d0ed74280c3691716b55369197a0f40dad8d116abaca22fcea71476bd52e9396d80d066d3e859bc945dfdb9e305baff59ab'
-        'SKIP'
-        'edc4b0527190a8092fb2b2b0c6fa0f5fa39edbc6bdfceb6e286feebcf84a133b25d8a1e1c925a625ae3a6bb37cacfade3a3963159cb448e4e3af66480991b772'
+b2sums=('a1d10f1b4422f55c9c87fec0d319fd3dfaf8992f40f9c3d6da1d74e6e78ef220c24cdcd5b689070fb4a287070d1cb3659dc9ea79e5500027854f32c1326c67f7'
         'SKIP'
         '6d92fb81077232b8cd1ae500b3aabc71434792e750ea6126dc095e50d4278d3e42b3cfdc3c8bc693ea14b109f6adfa3a1ed095187fc5501962fbe8f049f867bc'
         'SKIP'
@@ -350,9 +348,7 @@ b2sums=('7d3904933ddca054bc085d34c2941d0ed74280c3691716b55369197a0f40dad8d116aba
 b2sums_x86_64=('f32a1b6294314a21345ae4b4388b5e8d8d9c11d405ef54947ab4e1c0347b82cc66410f7fb5ec547d269ec38c512398c83e750327c76852adf2534d17e021cecb')
 
 # https://www.kernel.org/pub/linux/kernel/v7.x/sha256sums.asc
-sha256sums=('7d0e7ce14f98c43efe880cffbf354a59be45928fdf7170d7333c374ae91c0d83'
-            'SKIP'
-            'f656784cef70bc1688e64375c650c9a37b286a9c660ed29b711141b141f95d78'
+sha256sums=('8ba259e8e7b13ec6ef0941c8a39ad90b24bd4a4d6c0010ba6bafb794550ecd03'
             'SKIP'
             '95f3e9209629044028373af987dc0e270a5a15acb8c8e49c5f05057220c75fe2'
             'SKIP'
